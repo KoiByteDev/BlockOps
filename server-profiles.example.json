@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "fabric-26-2-hardcore",
+      "name": "Fabric 26.2 Hardcore + Distant Horizons",
+      "path": "profiles/fabric-26-2-hardcore",
+      "minecraftVersion": "26.2",
+      "loader": "fabric",
+      "loaderVersion": "0.19.3",
+      "javaMajor": 25,
+      "minimumRam": "2G",
+      "maximumRam": "6G",
+      "launchJar": "fabric-server-launch.jar",
+      "jvmArguments": ["-XX:+UseZGC"],
+      "serverArguments": ["nogui"],
+      "port": 25565,
+      "runner": "existing"
+    },
+    {
+      "id": "rlcraft-dregora",
+      "name": "RLCraft Dregora",
+      "path": "profiles/rlcraft-dregora",
+      "minecraftVersion": "1.12.2",
+      "loader": "forge",
+      "loaderVersion": "14.23.5.2860",
+      "javaMajor": 8,
+      "minimumRam": "6G",
+      "maximumRam": "8G",
+      "launchJar": "forge-1.12.2-14.23.5.2860.jar",
+      "jvmArguments": [
+        "-server",
+        "-XX:+UseG1GC",
+        "-XX:+UnlockExperimentalVMOptions",
+        "-XX:MaxGCPauseMillis=50",
+        "-XX:G1NewSizePercent=20",
+        "-XX:G1ReservePercent=20",
+        "-XX:G1HeapRegionSize=32M"
+      ],
+      "serverArguments": ["nogui"],
+      "port": 25565,
+      "runner": "generic"
+    }
+  ]
+}

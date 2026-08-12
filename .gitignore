@@ -1,0 +1,46 @@
+# Live worlds and player progress (transfer only while the server is stopped)
+/profiles/
+/world/
+/profiles/*/DregoraRL/
+/profiles/*/world/
+/profiles/*/world_nether/
+/profiles/*/world_the_end/
+
+# Runtime/generated data
+/profiles/*/.fabric/
+/profiles/*/.control/
+/profiles/*/libraries/
+/profiles/*/versions/
+/runtimes/
+/install-cache/
+/**/logs/
+/**/*.log
+/**/*.sqlite
+/**/*.sqlite-shm
+/**/*.sqlite-wal
+/**/crash-reports/
+/**/cache/
+
+# Server binaries and mod binaries (GitHub has a 100 MB per-file limit)
+/profiles/*/*.jar
+/**/mods/*.jar
+/**/coremods/*.jar
+
+# Mutable identity/access data and secrets
+/server.properties
+/server-profiles.json
+/**/server.properties
+/**/profile.json
+/**/ops.json
+/**/whitelist.json
+/**/banned-ips.json
+/**/banned-players.json
+/**/usercache.json
+/**/usernamecache.json
+/eula.txt
+/**/eula.txt
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+desktop.ini
