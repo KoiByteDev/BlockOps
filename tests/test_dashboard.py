@@ -1,3 +1,4 @@
+import os
 import tempfile
 import tarfile
 import unittest
@@ -143,6 +144,58 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual((world / "level.dat").read_bytes(), b"new")
             self.assertTrue((world / "new.txt").is_file())
             self.assertFalse((world / "old.txt").exists())
+
+    def test_imported_backup_can_use_a_different_world_folder_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            world = folder / "current-world"
+            world.mkdir()
+            (world / "level.dat").write_bytes(b"old")
+            imported = folder / "from-friend" / "their-world"
+            imported.mkdir(parents=True)
+            (imported / "level.dat").write_bytes(b"new")
+            (imported / "playerdata.dat").write_bytes(b"progress")
+            archive_path = folder / "imported.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(imported, arcname="their-world")
+            profile = {"id": "test", "path": str(folder)}
+            with mock.patch.object(dashboard.manager, "absolute_profile_path", return_value=folder), \
+                 mock.patch.object(dashboard.manager, "world_path", return_value=world):
+                dashboard.apply_backup_archive(profile, archive_path)
+            self.assertEqual((world / "level.dat").read_bytes(), b"new")
+            self.assertEqual((world / "playerdata.dat").read_bytes(), b"progress")
+
+    def test_backup_validation_rejects_archive_without_one_world_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            archive_path = folder / "not-a-world.tar.gz"
+            source = folder / "notes.txt"
+            source.write_text("not a Minecraft world", encoding="utf-8")
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(source, arcname="notes.txt")
+            profile = {"id": "test", "path": str(folder)}
+            with self.assertRaisesRegex(dashboard.manager.ManagerError, "exactly one world folder"):
+                dashboard.validate_backup_archive(profile, archive_path)
+
+    def test_backup_pruning_deletes_oldest_after_retention_is_exceeded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            world = folder / "world"
+            backups = folder / "backups"
+            world.mkdir()
+            backups.mkdir()
+            profile = {"id": "test", "path": str(folder), "backupSettings": {"retention": 10}}
+            created = []
+            for index in range(11):
+                path = backups / f"world-{index:02d}.tar.gz"
+                path.write_bytes(b"backup")
+                os.utime(path, (index + 1, index + 1))
+                created.append(path)
+            with mock.patch.object(dashboard.manager, "absolute_profile_path", return_value=folder), \
+                 mock.patch.object(dashboard.manager, "world_path", return_value=world):
+                dashboard.prune_profile_backups(profile)
+            self.assertFalse(created[0].exists())
+            self.assertTrue(all(path.exists() for path in created[1:]))
 
     def test_apply_backup_archive_rejects_traversal_without_touching_world(self):
         with tempfile.TemporaryDirectory() as directory:

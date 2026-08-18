@@ -27,7 +27,7 @@ import urllib.request
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import server_manager as manager
 
@@ -38,6 +38,9 @@ WEB_ROOT = Path(__file__).resolve().parent / "dashboard_web"
 TOKEN_FILE = manager.STATE / "dashboard-token"
 MAX_JSON_BODY = 3 * 1024 * 1024
 MAX_MOD_UPLOAD = 1024 * 1024 * 1024
+MAX_BACKUP_UPLOAD = 50 * 1024 * 1024 * 1024
+MAX_BACKUP_EXPANDED = 250 * 1024 * 1024 * 1024
+MAX_BACKUP_MEMBERS = 2_000_000
 MAX_EDITABLE_FILE = 2 * 1024 * 1024
 ALLOWED_ASSETS = {"/": "index.html", "/app.js": "app.js", "/styles.css": "styles.css"}
 RAM_PATTERN = re.compile(r"[1-9][0-9]*[MG]", re.IGNORECASE)
@@ -984,10 +987,18 @@ def create_offline_backup(profile: dict, *, label: str = "", prune: bool = True)
     finally:
         temporary.unlink(missing_ok=True)
     if prune:
-        completed = sorted(backups.glob(f"{world.name}-*.tar.gz"), key=lambda item: item.stat().st_mtime)
-        for expired in completed[:-settings["retention"]]:
-            expired.unlink(missing_ok=True)
+        prune_profile_backups(profile)
     return destination.name
+
+
+def prune_profile_backups(profile: dict) -> None:
+    """Keep the configured number of automatic, manual, and imported snapshots."""
+    folder = manager.absolute_profile_path(profile)
+    world = manager.world_path(folder)
+    backups = folder / "backups"
+    completed = sorted(backups.glob(f"{world.name}-*.tar.gz"), key=lambda item: item.stat().st_mtime)
+    for expired in completed[:-manager.backup_settings(profile)["retention"]]:
+        expired.unlink(missing_ok=True)
 
 
 def backup_file(profile: dict, name: str) -> Path:
@@ -999,6 +1010,37 @@ def backup_file(profile: dict, name: str) -> Path:
     return path
 
 
+def validate_backup_archive(profile: dict, archive_path: Path) -> str:
+    """Validate an archive and return the single top-level Minecraft world folder."""
+    roots: set[str] = set()
+    expanded_bytes = 0
+    try:
+        with tarfile.open(archive_path, "r:gz") as archive:
+            member_count = 0
+            for member in archive:
+                member_count += 1
+                if member_count > MAX_BACKUP_MEMBERS:
+                    raise manager.ManagerError("The selected backup contains too many files.")
+                if "\\" in member.name:
+                    raise manager.ManagerError("The selected backup contains an unsafe entry.")
+                relative = PurePosixPath(member.name)
+                if relative.is_absolute() or ".." in relative.parts or member.issym() or member.islnk() or member.isdev():
+                    raise manager.ManagerError("The selected backup contains an unsafe entry.")
+                expanded_bytes += max(0, member.size)
+                if expanded_bytes > MAX_BACKUP_EXPANDED:
+                    raise manager.ManagerError("The selected backup expands beyond the 250 GB safety limit.")
+                clean_parts = tuple(part for part in relative.parts if part not in {"", "."})
+                if len(clean_parts) == 2 and clean_parts[1] == "level.dat" and member.isfile():
+                    roots.add(clean_parts[0])
+            if member_count == 0:
+                raise manager.ManagerError("The selected backup is empty.")
+    except (tarfile.TarError, EOFError) as error:
+        raise manager.ManagerError("The selected file is not a readable .tar.gz world backup.") from error
+    if len(roots) != 1:
+        raise manager.ManagerError("The backup must contain exactly one world folder with level.dat at its top level.")
+    return next(iter(roots))
+
+
 def apply_backup_archive(profile: dict, archive_path: Path) -> None:
     """Replace a stopped world's data with a validated archive, rolling back on failure."""
     folder = manager.absolute_profile_path(profile)
@@ -1008,22 +1050,16 @@ def apply_backup_archive(profile: dict, archive_path: Path) -> None:
     moved_original = False
     installed_restore = False
     try:
+        archive_world_root = validate_backup_archive(profile, archive_path)
         with tarfile.open(archive_path, "r:gz") as archive:
-            members = archive.getmembers()
-            if not members:
-                raise manager.ManagerError("The selected backup is empty.")
-            for member in members:
-                target = (staging / member.name).resolve()
-                if not target.is_relative_to(staging.resolve()) or member.issym() or member.islnk() or member.isdev():
-                    raise manager.ManagerError("The selected backup contains an unsafe entry.")
             if sys.version_info >= (3, 12):
                 archive.extractall(staging, filter="data")
             else:
                 # Members were explicitly path- and link-validated above.
                 archive.extractall(staging)
-        restored = staging / world.name
+        restored = staging / archive_world_root
         if not restored.is_dir() or not (restored / "level.dat").is_file():
-            raise manager.ManagerError(f"The backup does not contain a valid {world.name} world.")
+            raise manager.ManagerError("The extracted backup does not contain a valid Minecraft world.")
         if world.exists():
             world.replace(rollback)
             moved_original = True
@@ -1056,13 +1092,17 @@ def run_restore_job(profile_id: str, backup_name: str) -> None:
             append_job_line("Saving and stopping the running server safely…")
             run_manager_step(["stop", "instance"])
             stopped = True
-        append_job_line("Creating a pre-restore safety snapshot…")
-        safety_name = create_offline_backup(profile, label="before-restore", prune=False)
-        append_job_line(f"Safety snapshot created: {safety_name}")
+        if manager.world_path(manager.absolute_profile_path(profile)).is_dir():
+            append_job_line("Creating a pre-restore safety snapshot…")
+            safety_name = create_offline_backup(profile, label="before-restore", prune=False)
+            append_job_line(f"Safety snapshot created: {safety_name}")
+        else:
+            append_job_line("No existing world progress was found; no safety snapshot is needed.")
         append_job_line("Validating and applying the selected world backup…")
         apply_backup_archive(profile, archive_path)
         restored = True
         append_job_line("World backup applied and verified.")
+        prune_profile_backups(profile)
         if was_running:
             append_job_line("Restarting the server…")
             run_manager_step(["start", "instance", "--profile", profile_id])
@@ -1340,21 +1380,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if not self.require_auth() or not self.valid_origin():
             return
-        match = re.fullmatch(r"/api/profiles/([^/]+)/mods/([^/]+)", parsed.path)
-        if not match:
+        mod_match = re.fullmatch(r"/api/profiles/([^/]+)/mods/([^/]+)", parsed.path)
+        backup_match = re.fullmatch(r"/api/profiles/([^/]+)/backups/([^/]+)", parsed.path)
+        match = mod_match or backup_match
+        if match is None:
             self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown API route.")
             return
         try:
             profile = profile_for_id(match.group(1))
-            name = Path(urllib.parse.unquote(match.group(2))).name
-            if not name.lower().endswith(".jar") or name != urllib.parse.unquote(match.group(2)):
-                raise manager.ManagerError("Only .jar mod files are accepted.")
+            requested_name = urllib.parse.unquote(match.group(2))
+            name = Path(requested_name).name
+            if name != requested_name or "/" in name or "\\" in name:
+                raise manager.ManagerError("Invalid upload filename.")
             length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > MAX_MOD_UPLOAD:
-                raise manager.ManagerError("The mod file is empty or larger than 1 GB.")
-            mods = manager.absolute_profile_path(profile) / "mods"
-            mods.mkdir(exist_ok=True)
-            destination = mods / name
+            if mod_match:
+                if not name.lower().endswith(".jar"):
+                    raise manager.ManagerError("Only .jar mod files are accepted.")
+                if length <= 0 or length > MAX_MOD_UPLOAD:
+                    raise manager.ManagerError("The mod file is empty or larger than 1 GB.")
+                upload_folder = manager.absolute_profile_path(profile) / "mods"
+                upload_folder.mkdir(exist_ok=True)
+                destination = upload_folder / name
+            else:
+                if not name.lower().endswith(".tar.gz"):
+                    raise manager.ManagerError("Only .tar.gz BlockOps world backups are accepted.")
+                if length <= 0 or length > MAX_BACKUP_UPLOAD:
+                    raise manager.ManagerError("The backup is empty or larger than 50 GB.")
+                folder = manager.absolute_profile_path(profile)
+                world = manager.world_path(folder)
+                upload_folder = folder / "backups"
+                upload_folder.mkdir(exist_ok=True)
+                label = re.sub(r"[^A-Za-z0-9._-]+", "-", name[:-7]).strip("-.")[:60] or "imported"
+                unique = f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}"
+                destination = upload_folder / f"{world.name}-uploaded-{unique}-{label}.tar.gz"
             temporary = destination.with_suffix(destination.suffix + ".upload")
             with temporary.open("wb") as handle:
                 remaining = length
@@ -1364,8 +1422,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         raise manager.ManagerError("The upload ended unexpectedly.")
                     handle.write(chunk)
                     remaining -= len(chunk)
+            if backup_match:
+                validate_backup_archive(profile, temporary)
             temporary.replace(destination)
-            self.send_json({"ok": True, "message": f"Uploaded {name}. Restart to load it."})
+            if backup_match:
+                prune_profile_backups(profile)
+                self.send_json({
+                    "ok": True,
+                    "message": f"Uploaded and validated {name}.",
+                    "backup": {"name": destination.name, "bytes": destination.stat().st_size, "modified": destination.stat().st_mtime},
+                })
+            else:
+                self.send_json({"ok": True, "message": f"Uploaded {name}. Restart to load it."})
         except (manager.ManagerError, OSError, ValueError) as error:
             with contextlib.suppress(UnboundLocalError, OSError):
                 temporary.unlink(missing_ok=True)

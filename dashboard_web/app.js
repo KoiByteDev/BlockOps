@@ -11,6 +11,7 @@ const state = {
   players: {},
   config: { roots: [], root: null, path: "", entries: [], file: null, dirty: false },
   restoreBackup: null,
+  restoreUploaded: false,
   settingsDirty: false,
   backupPolicyDirty: false,
   performance: null,
@@ -295,16 +296,22 @@ async function loadBackups() {
   } catch (error) { toast(error.message, "error"); }
 }
 
-function openRestoreModal(backupName) {
+function openRestoreModal(backupName, uploaded = false) {
   const profile = selectedProfile();
   state.restoreBackup = backupName;
+  state.restoreUploaded = uploaded;
+  $("#restore-eyebrow").textContent = uploaded ? "UPLOADED BACKUP" : "WORLD RESTORE";
+  $("#restore-title").textContent = uploaded ? "REPLACE CURRENT PROGRESS?" : "APPLY BACKUP";
   $("#restore-backup-name").textContent = backupName;
-  $("#restore-behavior").textContent = profile.running
-    ? `${profile.name} is running. It will be saved, stopped, restored, and brought online again.`
-    : `${profile.name} is offline. The backup can be applied without starting the server.`;
+  $("#restore-behavior").textContent = uploaded
+    ? `The upload is valid. Confirm below to replace ${profile.name}'s current progress with it.`
+    : (profile.running
+      ? `${profile.name} is running. It will be saved, stopped, restored, and brought online again.`
+      : `${profile.name} is offline. The backup can be applied without starting the server.`);
   $("#restore-restart-step").hidden = !profile.running;
   $("#restore-confirm-name").value = "";
   $("#confirm-restore").disabled = true;
+  $("#confirm-restore").textContent = uploaded ? "REPLACE PROGRESS" : "RESTORE WORLD";
   $("#create-modal").hidden = true;
   $("#restore-modal").hidden = false;
   setTimeout(() => $("#restore-confirm-name").focus(), 30);
@@ -313,6 +320,8 @@ function openRestoreModal(backupName) {
 function closeRestoreModal() {
   $("#restore-modal").hidden = true;
   state.restoreBackup = null;
+  state.restoreUploaded = false;
+  $("#confirm-restore").textContent = "RESTORE WORLD";
 }
 
 function renderPlayers(profile, players) {
@@ -490,6 +499,35 @@ async function uploadMods(files) {
   }
   await loadMods();
   await refreshState(true);
+}
+
+async function uploadBackup(files) {
+  const profile = selectedProfile();
+  const file = files?.[0];
+  if (!profile || !file) return;
+  if (files.length > 1) toast("Upload one world backup at a time.", "error");
+  if (!file.name.toLowerCase().endsWith(".tar.gz")) { toast(`${file.name} is not a .tar.gz BlockOps backup.`, "error"); return; }
+  const dropZone = $("#backup-drop-zone");
+  try {
+    dropZone.classList.add("uploading");
+    dropZone.querySelector("strong").textContent = `UPLOADING ${file.name}`;
+    toast(`Uploading and validating ${file.name}…`);
+    const response = await api(`/api/profiles/${encodeURIComponent(profile.id)}/backups/${encodeURIComponent(file.name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/gzip" },
+      body: file,
+    });
+    toast(response.message);
+    await loadBackups();
+    await refreshState(true);
+    openRestoreModal(response.backup.name, true);
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    dropZone.classList.remove("uploading");
+    dropZone.querySelector("strong").textContent = "DROP A WORLD BACKUP HERE";
+    $("#backup-upload").value = "";
+  }
 }
 
 function renderPerformanceChart(history) {
@@ -702,6 +740,12 @@ function wireEvents() {
     await runAction("/api/jobs/create", Object.fromEntries(form.entries()));
   });
   $("#create-backup").addEventListener("click", async () => { await runAction(`/api/profiles/${encodeURIComponent(selectedProfile().id)}/backup`); setTimeout(loadBackups, 1500); });
+  $("#backup-upload").addEventListener("change", (event) => uploadBackup(event.target.files));
+  const backupDropZone = $("#backup-drop-zone");
+  backupDropZone.addEventListener("click", () => $("#backup-upload").click());
+  for (const name of ["dragenter", "dragover"]) backupDropZone.addEventListener(name, (event) => { event.preventDefault(); backupDropZone.classList.add("dragging"); });
+  for (const name of ["dragleave", "drop"]) backupDropZone.addEventListener(name, (event) => { event.preventDefault(); backupDropZone.classList.remove("dragging"); });
+  backupDropZone.addEventListener("drop", (event) => uploadBackup(event.dataTransfer.files));
   $("#backup-settings-form").addEventListener("input", () => { state.backupPolicyDirty = true; });
   $("#backup-settings-form").addEventListener("submit", async (event) => {
     event.preventDefault();

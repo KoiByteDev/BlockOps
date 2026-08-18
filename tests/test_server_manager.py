@@ -81,6 +81,15 @@ class ServerManagerTests(unittest.TestCase):
         self.assertEqual(manager.backup_settings({"backupSettings": {"intervalMinutes": 1}})["intervalMinutes"], 5)
         self.assertEqual(manager.backup_settings({"backupSettings": {"retention": 999}})["retention"], 100)
 
+    def test_new_profiles_use_thirty_minutes_and_ten_backups(self):
+        self.assertEqual(
+            manager.new_profile_backup_settings(),
+            {"enabled": True, "intervalMinutes": 30, "retention": 10, "compressionLevel": 6, "backupOnStop": False, "onlyWhenEmpty": False},
+        )
+        # The fallback for existing legacy profiles remains unchanged.
+        self.assertEqual(manager.backup_settings({})["intervalMinutes"], 10)
+        self.assertEqual(manager.backup_settings({})["retention"], 12)
+
     def test_live_player_count_uses_server_list_output(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

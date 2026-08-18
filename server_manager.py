@@ -44,8 +44,12 @@ PLAYIT_CONFIG = ROOT / "playit.toml"
 PLAYIT_SOCKET = STATE / "playit.sock"
 DEFAULT_PORT = 25565
 IS_WINDOWS = os.name == "nt"
+# Legacy fallbacks are intentionally unchanged so profiles created before
+# backupSettings was persisted keep their existing effective behavior.
 BACKUP_INTERVAL_SECONDS = 10 * 60
-BACKUP_RETENTION = 12  # Ten-minute snapshots for the most recent two hours.
+BACKUP_RETENTION = 12
+NEW_PROFILE_BACKUP_INTERVAL_MINUTES = 30
+NEW_PROFILE_BACKUP_RETENTION = 10
 PLAYER_LIST_PATTERNS = (
     re.compile(r"There are (\d+) of a max of \d+ players online:", re.IGNORECASE),
     re.compile(r"There are (\d+)/\d+ players online:", re.IGNORECASE),
@@ -115,6 +119,18 @@ def backup_settings(profile: dict) -> dict:
         "compressionLevel": min(9, max(1, int(values.get("compressionLevel", 6)))),
         "backupOnStop": bool(values.get("backupOnStop", False)),
         "onlyWhenEmpty": bool(values.get("onlyWhenEmpty", False)),
+    }
+
+
+def new_profile_backup_settings() -> dict:
+    """Defaults persisted only into profiles created from this version onward."""
+    return {
+        "enabled": True,
+        "intervalMinutes": NEW_PROFILE_BACKUP_INTERVAL_MINUTES,
+        "retention": NEW_PROFILE_BACKUP_RETENTION,
+        "compressionLevel": 6,
+        "backupOnStop": False,
+        "onlyWhenEmpty": False,
     }
 
 
@@ -433,6 +449,7 @@ def make_profile(args) -> dict:
             "minecraftVersion": version, "loader": loader, "loaderVersion": loader_version or "",
             "javaMajor": major, "javaPath": str(java), "minimumRam": args.min_ram, "maximumRam": args.max_ram,
             "launchJar": launch, "jvmArguments": [], "serverArguments": ["nogui"], "port": DEFAULT_PORT,
+            "backupSettings": new_profile_backup_settings(),
         }
         save_json(folder / "profile.json", profile)
         data["schemaVersion"] = 2

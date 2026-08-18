@@ -166,6 +166,7 @@ input:focus, select:focus { border-color: var(--grass); box-shadow: 0 0 0 2px #5
 .list-item strong { display: block; overflow: hidden; font: 700 11px var(--pixel); text-overflow: ellipsis; white-space: nowrap; }.list-item small { display: block; margin-top: 4px; color: #7f8778; font-size: 10px; }
 .list-item.disabled { opacity: .55; }.list-empty { padding: 35px; color: #788072; text-align: center; font: 700 10px var(--pixel); }
 .backup-note { display: flex; gap: 10px; margin: 17px 18px; padding: 11px; color: #b2ae8e; background: #3b3625; border: 1px solid #5d5435; font-size: 11px; }
+.backup-drop-zone { min-height: 92px; margin-top: 0; text-align: center; cursor: pointer; }.backup-drop-zone span { max-width: 580px; }
 .backup-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(310px, .7fr); gap: 16px; align-items: start; }.backup-library { min-width: 0; }
 .backup-settings { background: #1d221a; }.backup-settings-body { display: grid; gap: 14px; padding: 17px; }.backup-switch { margin: 0; }.backup-settings .field-row { margin: 0; }.backup-settings-body > label:not(.switch-row) { margin: 0; }
 .policy-invariants { display: grid; gap: 7px; padding: 12px; color: #a9b2a2; background: #151914; border: 1px solid #384130; font-size: 10px; }.policy-invariants strong { color: var(--grass-hi); font: 800 8px var(--pixel); }.policy-invariants span::before { content: "✓"; margin-right: 8px; color: var(--grass-hi); font-weight: 900; }

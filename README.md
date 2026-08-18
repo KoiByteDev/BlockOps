@@ -27,7 +27,7 @@ No system Python or Java installation is required. The first-run installer downl
    ./setup.command
    ```
 
-Setup is safe to run again. It reuses the private runtime and verifies the app before opening it.
+Setup is safe to run again. It reuses the private runtime and verifies the app before opening it. Developer tests are not required for installation, so a release copy without the `tests` folder still installs normally.
 
 ## First server
 
@@ -65,7 +65,9 @@ To move an existing world, first create a matching server in BlockOps and stop i
 
 ## Backups and safety
 
-By default, a running server creates a compressed world backup every 10 minutes and retains the newest 12. BlockOps uses `save-off` and `save-all flush` before each live snapshot, then restores automatic saving. Applying a backup validates the archive, creates a fresh safety snapshot, safely stops a running server, restores with rollback on failure, and restarts it.
+New servers default to one compressed world backup every 30 minutes and retain the newest 10, deleting the oldest when an eleventh is created. Existing servers keep their previously stored schedule. Each server's frequency, retention, compression, empty-server behavior, and safe-stop snapshot option can be changed under **Backups → Backup Policy**.
+
+You can also drag a BlockOps `.tar.gz` world backup onto the Backups screen. BlockOps uploads and validates it first, then asks whether to replace the server's current progress. Applying any backup creates a fresh safety snapshot, safely stops a running server, restores with rollback on failure, and restarts it. Live snapshots use `save-off` and `save-all flush`, then restore automatic saving.
 
 The stop action sends `save-all flush` and `stop`, waiting up to 125 seconds. It will not silently force-kill a server that has not completed its save.
 
@@ -74,7 +76,7 @@ The stop action sends `save-all flush` and `stop`, waiting up to 125 seconds. It
 BlockOps uses only the Python standard library. With Python 3.10+ installed:
 
 ```sh
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -t . -v
 ```
 
 GitHub Actions runs the same tests on Windows and macOS for every push and pull request. Network access is required only for initial setup and first-time downloads of Minecraft, Java, loaders, and Playit.

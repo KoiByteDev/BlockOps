@@ -16,8 +16,8 @@
       "serverArguments": ["nogui"],
       "backupSettings": {
         "enabled": true,
-        "intervalMinutes": 10,
-        "retention": 12,
+        "intervalMinutes": 30,
+        "retention": 10,
         "compressionLevel": 6,
         "backupOnStop": false,
         "onlyWhenEmpty": false

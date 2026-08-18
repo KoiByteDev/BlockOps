@@ -26,7 +26,7 @@ if not exist "%PYTHON%" (
 )
 
 echo [3/3] Checking the app...
-"%PYTHON%" -m unittest discover -s tests >nul
+"%PYTHON%" -c "import dashboard, server_manager; assert dashboard.WEB_ROOT.is_dir(), 'dashboard_web is missing'"
 if errorlevel 1 goto :failed
 
 echo.
@@ -39,7 +39,8 @@ exit /b 0
 
 :failed
 echo.
-echo Setup could not finish. Check your internet connection, then run setup.bat again.
+echo Setup could not finish. Make sure the ZIP was fully extracted, then run setup.bat again.
+echo If you used Git, pull the latest changes before retrying.
 echo If Windows showed a security prompt, allow PowerShell to download uv from astral.sh.
 pause
 exit /b 1

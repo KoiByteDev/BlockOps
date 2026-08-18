@@ -25,7 +25,7 @@ fi
 
 echo "[3/3] Checking the app..."
 cd "$SCRIPT_DIR"
-"$PYTHON" -m unittest discover -s tests >/dev/null
+"$PYTHON" -c "import dashboard, server_manager; assert dashboard.WEB_ROOT.is_dir(), 'dashboard_web is missing'"
 
 echo
 echo "Setup complete. You can use BlockOps.app or BlockOps.command from now on."

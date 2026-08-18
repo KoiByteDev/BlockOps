@@ -259,9 +259,10 @@
           <div class="management-panel block-panel backup-library">
             <div class="panel-title">
               <div><strong>WORLD BACKUPS</strong><span>Safe, compressed snapshots</span></div>
-              <button class="tiny-button" id="create-backup">CREATE BACKUP</button>
+              <div><label class="tiny-button upload-button">UPLOAD<input id="backup-upload" type="file" accept=".tar.gz,application/gzip"></label> <button class="tiny-button" id="create-backup">CREATE BACKUP</button></div>
             </div>
             <div class="backup-note"><span>ⓘ</span> Applying a backup always creates a safety snapshot first. Running servers are saved, stopped, restored, and restarted automatically.</div>
+            <div class="drop-zone backup-drop-zone" id="backup-drop-zone"><strong>DROP A WORLD BACKUP HERE</strong><span>BlockOps .tar.gz backups are validated before you can apply them</span></div>
             <div class="item-list" id="backups-list"></div>
           </div>
           <form class="backup-settings block-panel" id="backup-settings-form">
@@ -312,7 +313,7 @@
 
   <div class="modal-backdrop" id="restore-modal" hidden>
     <section class="modal restore-modal block-panel" role="dialog" aria-modal="true" aria-labelledby="restore-title">
-      <div class="modal-header"><div><p class="eyebrow">WORLD RESTORE</p><h2 id="restore-title">APPLY BACKUP</h2></div><button class="close-button" data-close-restore aria-label="Close">×</button></div>
+      <div class="modal-header"><div><p class="eyebrow" id="restore-eyebrow">WORLD RESTORE</p><h2 id="restore-title">APPLY BACKUP</h2></div><button class="close-button" data-close-restore aria-label="Close">×</button></div>
       <div class="restore-warning"><span>!</span><div><strong id="restore-backup-name">Selected backup</strong><p id="restore-behavior">BlockOps will prepare a safe restore.</p></div></div>
       <ol class="restore-steps"><li>Create a fresh safety snapshot of the current world</li><li>Validate the archive before replacing any files</li><li>Restore the world with automatic rollback if anything fails</li><li id="restore-restart-step">Restart the server and confirm it comes online</li></ol>
       <label>Type the server name to confirm<input id="restore-confirm-name" autocomplete="off"></label>
