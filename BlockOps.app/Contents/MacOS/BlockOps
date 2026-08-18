@@ -1,0 +1,4 @@
+#!/bin/zsh
+set -eu
+PROJECT_ROOT=${0:A:h:h:h:h}
+exec "$PROJECT_ROOT/BlockOps.command"

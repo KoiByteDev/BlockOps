@@ -1,25 +1,82 @@
-# Minecraft server setup
+# BlockOps
 
-Portable configuration examples and shared management scripts for two mutually exclusive servers on TCP port 25565:
+BlockOps is a local Minecraft Java server manager for Windows and macOS. Its browser dashboard creates Vanilla, Fabric, and Forge servers; installs the correct Java runtime; safely starts and stops worlds; manages mods and configuration; shows players and logs; makes scheduled backups; and connects the active server through playit.gg.
 
-- Fabric 26.2 Hardcore with Distant Horizons (Java 25, 2–6 GB RAM)
-- RLCraft Dregora 1.12.2 with Forge 14.23.5.2860 (Java 8, 6–8 GB RAM)
+The dashboard is private to the computer (`127.0.0.1:8765`) and protected by a random local launch token. Worlds and account credentials are excluded from Git.
 
-## Important: saves are not stored in Git
+## Install from GitHub
 
-Live worlds, player data, logs, Java runtimes, server/mod JARs, and files containing secrets or machine-specific paths are intentionally ignored. The Fabric Distant Horizons database is larger than GitHub's per-file limit, and Git is unsafe for synchronizing a running Minecraft world.
+No system Python or Java installation is required. The first-run installer downloads a private Python runtime, and BlockOps later downloads the exact Java runtime each Minecraft version needs.
 
-To move all progress between machines:
+### Windows 10/11
 
-1. Run `save-all flush`, followed by `stop`.
-2. Wait for the Java process to exit.
-3. Archive the complete `Minecraft Server` directory, including ignored files.
-4. Transfer and extract the archive on the destination machine.
-5. Never run divergent copies and attempt to merge their worlds.
+1. On GitHub, choose **Code → Download ZIP**, then extract the ZIP completely. Do not run the app from inside the ZIP preview.
+2. Double-click `setup.bat`.
+3. If Windows asks whether PowerShell may run the trusted Astral `uv` installer, allow it. Administrator access is not required.
+4. BlockOps opens in your default browser. Later, use `BlockOps.bat`.
 
-On an installed server, both server payloads are isolated below the ignored `profiles/` directory:
+### macOS 12 or newer
 
-- `profiles/fabric-26-2-hardcore`
-- `profiles/rlcraft-dregora`
+1. On GitHub, choose **Code → Download ZIP**, then extract it, or clone the repository with Git.
+2. Double-click `setup.command`.
+3. If macOS blocks it, Control-click `setup.command`, choose **Open**, and confirm once. Later, launch `BlockOps.app` or `BlockOps.command`.
+4. If a ZIP extractor removed executable permissions, open Terminal in this folder and run:
 
-The private repository intentionally does not contain either profile payload. Its root contains only shared Windows profile-manager code, convenience launchers, and the portable `server-profiles.example.json`. Native macOS launch scripts still need to be added before the management interface is cross-platform.
+   ```sh
+   chmod +x setup.command BlockOps.command server-manager *.command BlockOps.app/Contents/MacOS/BlockOps
+   ./setup.command
+   ```
+
+Setup is safe to run again. It reuses the private runtime and verifies the app before opening it.
+
+## First server
+
+1. Choose **Create Server**, enter a Minecraft version, select Vanilla/Fabric/Forge, and choose RAM limits.
+2. BlockOps validates the version and downloads Minecraft plus the correct Temurin Java runtime. Forge requires an exact Forge version; Fabric can select the latest stable loader automatically.
+3. Choose **Start Server**. On Windows, BlockOps downloads the signed official portable Playit agent. On macOS, use **Setup Guide → Get Playit** once and run the current official Mac agent; BlockOps will then locate it.
+4. If the progress drawer shows **Claim Playit Agent**, open that link, approve the agent, and create a **Minecraft Java** tunnel targeting `127.0.0.1:25565`. Then choose Start again.
+
+The **Setup Guide** button in the app shows these milestones and tells the user what remains. Playit is the only account step BlockOps cannot perform on the user's behalf.
+
+## Terminal tools
+
+The graphical dashboard is recommended, but direct commands are available:
+
+| Task | macOS | Windows |
+| --- | --- | --- |
+| Open manager | `./server-manager` | `server-manager.bat` |
+| Create server | `./server-manager create instance --name Survival --minecraft 1.21.8 --loader fabric` | `server-manager.bat create instance --name Survival --minecraft 1.21.8 --loader fabric` |
+| Start | `./server-manager start instance --profile survival` | `server-manager.bat start instance --profile survival` |
+| Console | `./server-manager console` | `server-manager.bat console` |
+| Stop safely | `./server-manager stop instance` | `server-manager.bat stop instance` |
+
+On macOS, `Server Manager.command`, `Server Console.command`, and `Minecraft Server Dashboard.command` are Finder-friendly launchers.
+
+## What is and is not stored in Git
+
+Git contains the application, launchers, tests, and portable examples. It intentionally excludes:
+
+- worlds, player data, profiles, logs, crash reports, mods, and server JARs;
+- downloaded Python/Java/Playit runtimes and install caches;
+- Playit credentials, dashboard tokens, and machine-specific profile data;
+- backups and BlockOps configuration-edit recovery copies.
+
+To move an existing world, first create a matching server in BlockOps and stop it. Replace its world folder only while it is offline. To move a live BlockOps installation between computers, safely stop the server and transfer the full profile directory separately; never try to merge a running Minecraft world through Git.
+
+## Backups and safety
+
+By default, a running server creates a compressed world backup every 10 minutes and retains the newest 12. BlockOps uses `save-off` and `save-all flush` before each live snapshot, then restores automatic saving. Applying a backup validates the archive, creates a fresh safety snapshot, safely stops a running server, restores with rollback on failure, and restarts it.
+
+The stop action sends `save-all flush` and `stop`, waiting up to 125 seconds. It will not silently force-kill a server that has not completed its save.
+
+## Developer verification
+
+BlockOps uses only the Python standard library. With Python 3.10+ installed:
+
+```sh
+python3 -m unittest discover -s tests -v
+```
+
+GitHub Actions runs the same tests on Windows and macOS for every push and pull request. Network access is required only for initial setup and first-time downloads of Minecraft, Java, loaders, and Playit.
+
+Downloads are obtained from the official Astral, Mojang, Fabric, Forge, Eclipse Adoptium, Azul, and `playit-cloud/playit-agent` endpoints.

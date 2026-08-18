@@ -1,0 +1,9 @@
+#!/bin/zsh
+set -eu
+SCRIPT_DIR=${0:A:h}
+PYTHON="$SCRIPT_DIR/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "BlockOps has not been set up yet. Starting setup..."
+  "$SCRIPT_DIR/setup.command" --no-launch
+fi
+exec "$PYTHON" "$SCRIPT_DIR/server_manager.py" "$@"

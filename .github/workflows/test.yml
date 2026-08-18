@@ -1,0 +1,42 @@
+name: Test BlockOps
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  installer-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run macOS first-time setup
+        if: runner.os == 'macOS'
+        run: ./setup.command --no-launch
+      - name: Run Windows first-time setup
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: setup.bat --no-launch
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile sources
+        run: python -m py_compile server_manager.py dashboard.py
+      - name: Run tests
+        run: python -m unittest discover -s tests -v

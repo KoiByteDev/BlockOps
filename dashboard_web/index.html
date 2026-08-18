@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#171b13">
+  <title>BlockOps — Minecraft Server Manager</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="sky-glow" aria-hidden="true"></div>
+  <div class="app-shell">
+    <header class="topbar">
+      <button class="mobile-menu icon-button" id="mobile-menu" aria-label="Show servers">☰</button>
+      <a class="brand" href="#" aria-label="BlockOps home">
+        <span class="brand-cube" aria-hidden="true"><i></i></span>
+        <span><strong>BLOCKOPS</strong><small>SERVER CONTROL</small></span>
+      </a>
+      <div class="global-status" id="global-status">
+        <span class="status-light"></span>
+        <span id="global-status-text">Checking realm…</span>
+      </div>
+      <button class="top-button" id="setup-guide">SETUP GUIDE</button>
+      <button class="top-button" id="open-folder-top">OPEN SERVER FILES</button>
+    </header>
+
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-heading">
+        <span>YOUR WORLDS</span>
+        <span class="count-badge" id="profile-count">0</span>
+      </div>
+      <div class="server-list" id="server-list"></div>
+      <button class="create-server" id="create-server">
+        <span class="plus-block">+</span>
+        <span><strong>CREATE NEW SERVER</strong><small>Forge a fresh world</small></span>
+      </button>
+      <div class="sidebar-foot">
+        <div><span>PLAYIT TUNNEL</span><strong id="playit-status">OFFLINE</strong></div>
+        <button class="text-button" id="quit-dashboard">QUIT DASHBOARD</button>
+      </div>
+    </aside>
+
+    <main class="main" id="main-content">
+      <section class="empty-state" id="empty-state" hidden>
+        <div class="empty-cube"><span></span></div>
+        <p class="eyebrow">NO WORLDS FOUND</p>
+        <h1>BUILD YOUR FIRST SERVER</h1>
+        <p>Create a Vanilla, Fabric, or Forge world and manage it all from here.</p>
+        <button class="mc-button primary" id="empty-create">CREATE SERVER</button>
+      </section>
+
+      <div id="dashboard-content">
+        <section class="hero-panel block-panel">
+          <div class="hero-copy">
+            <div class="hero-meta">
+              <span class="eyebrow" id="selected-type">FORGE SERVER</span>
+              <span class="server-state offline" id="selected-state"><i></i> OFFLINE</span>
+            </div>
+            <h1 id="selected-name">Loading world…</h1>
+            <p id="selected-description">Preparing your server controls.</p>
+            <div class="hero-actions">
+              <button class="mc-button primary" id="start-button"><span>▶</span> START SERVER</button>
+              <button class="mc-button danger" id="stop-button"><span>■</span> STOP SAFELY</button>
+              <button class="mc-button" id="open-folder"><span>▣</span> OPEN FOLDER</button>
+            </div>
+          </div>
+          <div class="world-art" aria-hidden="true">
+            <div class="sun"></div>
+            <div class="cloud cloud-a"></div>
+            <div class="cloud cloud-b"></div>
+            <div class="island">
+              <div class="grass-top"></div>
+              <div class="dirt-body"></div>
+              <div class="tree"><i></i><b></b></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="stat-grid" aria-label="Server information">
+          <article class="stat-card"><span class="stat-icon diamond">⌁</span><div><small>MODS</small><strong id="stat-mods">—</strong></div></article>
+          <article class="stat-card"><span class="stat-icon gold">▰</span><div><small>BACKUPS</small><strong id="stat-backups">—</strong></div></article>
+          <article class="stat-card"><span class="stat-icon player-icon">☺</span><div><small>PLAYERS</small><strong id="stat-players">—</strong></div></article>
+        </section>
+
+        <nav class="tabs" aria-label="Server sections">
+          <button class="tab active" data-tab="console">CONSOLE</button>
+          <button class="tab" data-tab="players">PLAYERS</button>
+          <button class="tab" data-tab="performance">PERFORMANCE</button>
+          <button class="tab" data-tab="settings">WORLD SETTINGS</button>
+          <button class="tab" data-tab="mods">MODS</button>
+          <button class="tab" data-tab="files">CONFIG FILES</button>
+          <button class="tab" data-tab="backups">BACKUPS</button>
+        </nav>
+
+        <section class="tab-panel active" id="tab-console">
+          <div class="console block-panel">
+            <div class="panel-title">
+              <div><span class="status-light" id="console-light"></span><strong>LIVE SERVER CONSOLE</strong></div>
+              <div class="console-actions"><button class="tiny-button" id="clear-console">CLEAR VIEW</button><span id="log-source">latest.log</span></div>
+            </div>
+            <div class="console-output" id="console-output" role="log" aria-live="polite"><p class="muted-line">Waiting for server logs…</p></div>
+            <form class="command-bar" id="command-form">
+              <span>/</span>
+              <input id="command-input" autocomplete="off" spellcheck="false" placeholder="say Welcome to the server!" aria-label="Minecraft server command">
+              <button type="submit">SEND ↵</button>
+            </form>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-players">
+          <div class="players-panel block-panel">
+            <div class="panel-title">
+              <div><span class="status-light" id="players-light"></span><strong>CONNECTED PLAYERS</strong></div>
+              <button class="tiny-button" id="refresh-players">REFRESH LIST</button>
+            </div>
+            <div class="players-summary">
+              <div class="player-count-block"><strong id="players-online-count">0</strong><span>ONLINE NOW</span></div>
+              <div class="capacity-copy"><span id="players-capacity">0 of 20 slots occupied</span><div class="capacity-track"><i id="players-capacity-bar"></i></div></div>
+            </div>
+            <div class="players-list" id="players-list"></div>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-performance">
+          <div class="performance-stack">
+            <section class="performance-hero block-panel">
+              <div class="panel-title">
+                <div><span class="status-light" id="performance-light"></span><strong>PERFORMANCE &amp; DIAGNOSTICS</strong><span id="performance-source">Universal collectors</span></div>
+                <div class="console-actions"><button class="tiny-button" id="export-performance">EXPORT REPORT</button><button class="tiny-button" id="refresh-performance">REFRESH</button></div>
+              </div>
+              <div class="performance-intro">
+                <div><p class="eyebrow">MEASUREMENT FIRST</p><h2 id="health-title">SERVER OFFLINE</h2><p id="health-detail">Historical diagnostics remain available while the server is stopped.</p></div>
+                <div class="health-chip" id="health-chip">NO LIVE SAMPLE</div>
+              </div>
+              <div class="metric-grid">
+                <article class="metric-card"><small>TPS</small><strong id="metric-tps">—</strong><span id="metric-tps-note">Awaiting a supported probe</span></article>
+                <article class="metric-card"><small>MSPT</small><strong id="metric-mspt">—</strong><span>50 ms is the tick budget</span></article>
+                <article class="metric-card"><small>JAVA CPU</small><strong id="metric-cpu">—</strong><span>100% ≈ one fully used core</span></article>
+                <article class="metric-card"><small>PROCESS RAM</small><strong id="metric-ram">—</strong><span id="metric-ram-note">Resident memory</span></article>
+                <article class="metric-card"><small>LOCAL RESPONSE</small><strong id="metric-latency">—</strong><span id="metric-latency-note">Host → Minecraft port</span></article>
+                <article class="metric-card"><small>DISK FREE</small><strong id="metric-disk">—</strong><span id="metric-disk-note">Server storage volume</span></article>
+              </div>
+            </section>
+
+            <section class="chart-panel block-panel">
+              <div class="panel-title"><div><strong>LIVE SAMPLE HISTORY</strong><span>Low-overhead samples kept only while BlockOps is open</span></div><div class="chart-legend"><span class="cpu-dot">CPU</span><span class="mspt-dot">MSPT</span><span class="latency-dot">LATENCY</span></div></div>
+              <div class="chart-wrap"><canvas id="performance-chart" height="190" aria-label="Performance history chart"></canvas><div class="chart-empty" id="chart-empty">START THE SERVER TO BUILD A LIVE HISTORY</div></div>
+            </section>
+
+            <div class="performance-columns">
+              <section class="diagnostic-card block-panel">
+                <div class="panel-title"><div><strong>ONE-CLICK PROFILING</strong><span>Tools appear only when supported</span></div></div>
+                <div class="diagnostic-body">
+                  <div class="capability-strip" id="capability-strip"></div>
+                  <div class="profile-actions" id="profile-actions"></div>
+                  <div class="diagnostic-note"><strong>SAFE DIAGNOSTICS</strong><span>These actions measure the running server. They do not edit server.properties, mod configs, JVM arguments, or world data.</span></div>
+                  <div class="report-links" id="performance-reports"></div>
+                </div>
+              </section>
+
+              <section class="diagnostic-card block-panel">
+                <div class="panel-title"><div><strong>RESOURCE DETAIL</strong><span>Measured and unavailable values are labeled</span></div></div>
+                <div class="resource-list" id="resource-list"></div>
+              </section>
+            </div>
+
+            <div class="performance-columns">
+              <section class="diagnostic-card block-panel">
+                <div class="panel-title"><div><strong>HEALTH ALERTS</strong><span>No opaque score</span></div></div>
+                <div class="alert-list" id="performance-alerts"></div>
+              </section>
+              <section class="diagnostic-card block-panel">
+                <div class="panel-title"><div><strong>MEASUREMENT PLAN</strong><span>Suggestions only — nothing is applied</span></div></div>
+                <div class="recommendation-list" id="performance-recommendations"></div>
+              </section>
+            </div>
+
+            <section class="timeline-panel block-panel">
+              <div class="panel-title"><div><strong>INCIDENT TIMELINE</strong><span id="timeline-count">Retained logs</span></div><label class="timeline-filter">SHOW<select id="timeline-filter"><option value="all">All events</option><option value="lag">Tick lag</option><option value="memory">Memory</option><option value="network">Network</option><option value="watchdog">Watchdog</option><option value="crash">Crashes</option><option value="backup">Backups</option><option value="lifecycle">Lifecycle</option></select></label></div>
+              <div class="timeline-list" id="performance-timeline"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-settings">
+          <form class="settings-grid" id="settings-form">
+            <article class="settings-card block-panel">
+              <div class="panel-title"><strong>SERVER IDENTITY</strong><span>Applies after restart</span></div>
+              <label>Display name<input name="name" maxlength="80"></label>
+              <label>Message of the day<input name="motd" maxlength="250"></label>
+              <div class="field-row">
+                <label>Minimum RAM<input name="minimumRam" placeholder="2G"></label>
+                <label>Maximum RAM<input name="maximumRam" placeholder="6G"></label>
+              </div>
+              <label>JVM arguments<input name="jvmArguments" placeholder="-XX:+UseG1GC"></label>
+            </article>
+            <article class="settings-card block-panel">
+              <div class="panel-title"><strong>GAME RULES</strong><span>server.properties</span></div>
+              <div class="field-row">
+                <label>Game mode<select name="gamemode"><option>survival</option><option>creative</option><option>adventure</option><option>spectator</option></select></label>
+                <label>Difficulty<select name="difficulty"><option>peaceful</option><option>easy</option><option>normal</option><option>hard</option></select></label>
+              </div>
+              <label>Maximum players<input name="maxPlayers" type="number" min="1" max="1000"></label>
+              <div class="toggle-grid">
+                <label class="switch-row">Whitelist<input name="whiteList" type="checkbox"><i></i></label>
+                <label class="switch-row">Hardcore<input name="hardcore" type="checkbox"><i></i></label>
+                <label class="switch-row">Online mode<input name="onlineMode" type="checkbox"><i></i></label>
+                <label class="switch-row">Player combat<input name="pvp" type="checkbox"><i></i></label>
+              </div>
+            </article>
+            <button class="mc-button primary save-settings" type="submit">SAVE WORLD SETTINGS</button>
+          </form>
+        </section>
+
+        <section class="tab-panel" id="tab-mods">
+          <div class="management-panel block-panel">
+            <div class="panel-title">
+              <div><strong>MOD PACK</strong><span>Drop .jar files into this world</span></div>
+              <label class="tiny-button upload-button">UPLOAD MOD<input id="mod-upload" type="file" accept=".jar" multiple></label>
+            </div>
+            <div class="drop-zone" id="drop-zone"><strong>DROP MOD FILES HERE</strong><span>Only Java .jar files are accepted</span></div>
+            <div class="item-list" id="mods-list"></div>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-files">
+          <div class="config-explorer block-panel">
+            <div class="panel-title explorer-title">
+              <div><span class="config-cube">⚙</span><strong>MODPACK CONFIG EXPLORER</strong><span id="config-save-state">No file selected</span></div>
+              <div><button class="tiny-button" id="config-reload" disabled>RELOAD</button><button class="tiny-button config-save" id="config-save" disabled>SAVE FILE</button></div>
+            </div>
+            <div class="explorer-layout">
+              <aside class="file-browser">
+                <label>LOCATION<select id="config-root" aria-label="Configuration location"></select></label>
+                <label>FILTER FILES<input id="config-filter" type="search" placeholder="Search this folder…"></label>
+                <nav class="breadcrumbs" id="config-breadcrumbs" aria-label="Configuration path"></nav>
+                <div class="file-list" id="config-file-list"><div class="file-empty">Choose a server location.</div></div>
+              </aside>
+              <section class="file-editor">
+                <div class="editor-head">
+                  <div><strong id="config-file-name">SELECT A CONFIG FILE</strong><span id="config-file-meta">CFG, JSON, TOML, properties, scripts, and other text formats</span></div>
+                  <span class="editor-modified" id="config-modified" hidden>UNSAVED</span>
+                </div>
+                <div class="editor-empty" id="editor-empty">
+                  <span class="big-gear">⚙</span>
+                  <strong>MODPACK-AGNOSTIC CONFIGURATION</strong>
+                  <p>Browse any supported server or mod configuration. Every save creates a recovery copy automatically.</p>
+                  <button class="tiny-button" id="go-to-mods">DISABLE AN ENTIRE MOD →</button>
+                </div>
+                <textarea id="config-editor" aria-label="Configuration file editor" spellcheck="false" hidden></textarea>
+              </section>
+            </div>
+            <div class="config-warning"><span>ⓘ</span><div><strong>SAFE EDITING</strong><p>Changes are written only inside this server profile. Most mod configuration changes require a server restart.</p></div></div>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-backups">
+          <div class="backup-layout">
+          <div class="management-panel block-panel backup-library">
+            <div class="panel-title">
+              <div><strong>WORLD BACKUPS</strong><span>Safe, compressed snapshots</span></div>
+              <button class="tiny-button" id="create-backup">CREATE BACKUP</button>
+            </div>
+            <div class="backup-note"><span>ⓘ</span> Applying a backup always creates a safety snapshot first. Running servers are saved, stopped, restored, and restarted automatically.</div>
+            <div class="item-list" id="backups-list"></div>
+          </div>
+          <form class="backup-settings block-panel" id="backup-settings-form">
+            <div class="panel-title"><div><strong>BACKUP POLICY</strong><span>Per-world automation</span></div></div>
+            <div class="backup-settings-body">
+              <label class="switch-row backup-switch">Scheduled backups<input name="enabled" type="checkbox"><i></i></label>
+              <label class="switch-row backup-switch">Only archive when empty<input name="onlyWhenEmpty" type="checkbox"><i></i></label>
+              <label class="switch-row backup-switch">Backup during safe stop<input name="backupOnStop" type="checkbox"><i></i></label>
+              <div class="field-row"><label>Every (minutes)<input name="intervalMinutes" type="number" min="5" max="1440"></label><label>Backups to keep<input name="retention" type="number" min="1" max="100"></label></div>
+              <label>Compression level<select name="compressionLevel"><option value="1">1 — Fastest</option><option value="3">3 — Fast</option><option value="6">6 — Balanced</option><option value="9">9 — Smallest file</option></select></label>
+              <div class="policy-invariants"><strong>ALWAYS PROTECTED</strong><span>World flush before live snapshots</span><span>Safety snapshot before every restore</span><span>Archive validation and rollback on failure</span></div>
+              <button class="mc-button primary" type="submit">SAVE BACKUP POLICY</button>
+            </div>
+          </form>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="create-modal" hidden>
+    <section class="modal block-panel" role="dialog" aria-modal="true" aria-labelledby="create-title">
+      <div class="modal-header"><div><p class="eyebrow">NEW WORLD</p><h2 id="create-title">CREATE A SERVER</h2></div><button class="close-button" data-close-modal aria-label="Close">×</button></div>
+      <form id="create-form">
+        <label>Server name<input name="name" required maxlength="80" placeholder="The Overworld"></label>
+        <label>Minecraft version<input name="minecraftVersion" required list="version-list" placeholder="1.21.8"><datalist id="version-list"></datalist></label>
+        <div class="loader-choices" role="radiogroup" aria-label="Server loader">
+          <label><input type="radio" name="loader" value="vanilla" checked><span><b>GRASS</b><strong>VANILLA</strong><small>Original Minecraft</small></span></label>
+          <label><input type="radio" name="loader" value="fabric"><span><b>THREAD</b><strong>FABRIC</strong><small>Modern & lightweight</small></span></label>
+          <label><input type="radio" name="loader" value="forge"><span><b>ANVIL</b><strong>FORGE</strong><small>Classic modpacks</small></span></label>
+        </div>
+        <label id="loader-version-field" hidden>Loader version<input name="loaderVersion" placeholder="Exact version for Forge"></label>
+        <div class="field-row"><label>Minimum RAM<input name="minimumRam" value="2G" required></label><label>Maximum RAM<input name="maximumRam" value="6G" required></label></div>
+        <div class="modal-actions"><button type="button" class="mc-button" data-close-modal>CANCEL</button><button type="submit" class="mc-button primary">CREATE & INSTALL</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="setup-modal" hidden>
+    <section class="modal setup-modal block-panel" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+      <div class="modal-header"><div><p class="eyebrow">FIRST-RUN GUIDE</p><h2 id="setup-title">GET READY TO PLAY</h2></div><button class="close-button" data-close-setup aria-label="Close">×</button></div>
+      <p class="setup-intro">BlockOps handles the technical downloads. These are the only milestones you may need to complete.</p>
+      <div class="setup-steps" id="setup-steps"><p>Checking this computer…</p></div>
+      <div class="setup-tip"><strong>Moving an existing world?</strong><span>Create the server first, stop it, then replace its world folder while the server is offline.</span></div>
+      <div class="modal-actions"><a class="mc-button" href="https://playit.gg/setup/download" target="_blank" rel="noreferrer">GET PLAYIT ↗</a><a class="mc-button" href="https://playit.gg/account/tunnels" target="_blank" rel="noreferrer">TUNNELS ↗</a><button type="button" class="mc-button primary" data-close-setup>GOT IT</button></div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="restore-modal" hidden>
+    <section class="modal restore-modal block-panel" role="dialog" aria-modal="true" aria-labelledby="restore-title">
+      <div class="modal-header"><div><p class="eyebrow">WORLD RESTORE</p><h2 id="restore-title">APPLY BACKUP</h2></div><button class="close-button" data-close-restore aria-label="Close">×</button></div>
+      <div class="restore-warning"><span>!</span><div><strong id="restore-backup-name">Selected backup</strong><p id="restore-behavior">BlockOps will prepare a safe restore.</p></div></div>
+      <ol class="restore-steps"><li>Create a fresh safety snapshot of the current world</li><li>Validate the archive before replacing any files</li><li>Restore the world with automatic rollback if anything fails</li><li id="restore-restart-step">Restart the server and confirm it comes online</li></ol>
+      <label>Type the server name to confirm<input id="restore-confirm-name" autocomplete="off"></label>
+      <div class="modal-actions"><button type="button" class="mc-button" data-close-restore>CANCEL</button><button type="button" class="mc-button danger" id="confirm-restore" disabled>RESTORE WORLD</button></div>
+    </section>
+  </div>
+
+  <div class="job-drawer" id="job-drawer" hidden>
+    <div class="job-head"><div><span class="craft-spinner"></span><strong id="job-title">CRAFTING SERVER</strong></div><button id="job-collapse" aria-label="Hide progress">⌄</button></div>
+    <div class="job-body"><p id="job-message">Preparing…</p><pre id="job-log"></pre><a id="claim-link" target="_blank" rel="noreferrer" hidden>CLAIM PLAYIT AGENT ↗</a></div>
+  </div>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
