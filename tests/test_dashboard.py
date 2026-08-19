@@ -1,3 +1,4 @@
+import io
 import os
 import tempfile
 import tarfile
@@ -9,6 +10,22 @@ import dashboard
 
 
 class DashboardTests(unittest.TestCase):
+    def test_manual_playit_upload_places_valid_windows_executable(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(dashboard.platform, "system", return_value="Windows"), \
+             mock.patch.object(dashboard.manager, "ROOT", Path(directory)):
+            destination = dashboard.install_playit_executable(io.BytesIO(b"MZportable"), 10, "playit.exe")
+            self.assertEqual(destination, Path(directory) / "runtimes" / "playit" / "playit.exe")
+            self.assertEqual(destination.read_bytes(), b"MZportable")
+
+    def test_manual_playit_upload_rejects_non_executable(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(dashboard.platform, "system", return_value="Windows"), \
+             mock.patch.object(dashboard.manager, "ROOT", Path(directory)):
+            with self.assertRaisesRegex(dashboard.manager.ManagerError, "not a valid Windows executable"):
+                dashboard.install_playit_executable(io.BytesIO(b"not-an-exe"), 10, "playit.exe")
+            self.assertFalse((Path(directory) / "runtimes" / "playit" / "playit.exe").exists())
+
     def test_setup_status_gates_first_world_behind_playit(self):
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch.object(dashboard, "ONBOARDING_FILE", Path(directory) / "onboarding.json"), \

@@ -38,6 +38,7 @@ WEB_ROOT = Path(__file__).resolve().parent / "dashboard_web"
 TOKEN_FILE = manager.STATE / "dashboard-token"
 ONBOARDING_FILE = manager.STATE / "onboarding.json"
 MAX_JSON_BODY = 3 * 1024 * 1024
+MAX_PLAYIT_UPLOAD = 100 * 1024 * 1024
 MAX_MOD_UPLOAD = 1024 * 1024 * 1024
 MAX_BACKUP_UPLOAD = 50 * 1024 * 1024 * 1024
 MAX_BACKUP_EXPANDED = 250 * 1024 * 1024 * 1024
@@ -438,22 +439,12 @@ def setup_status() -> dict:
     """Return user-facing onboarding checks without changing the machine."""
     profiles = manager.registry().get("profiles", [])
     bundled_playit = manager.ROOT / "runtimes" / "playit"
-    system_playit = []
-    if platform.system() == "Darwin":
-        system_playit = [
-            Path("/Applications/playit.app/Contents/MacOS/playit"),
-            Path("/Applications/Playit.app/Contents/MacOS/playit"),
-        ]
-    elif platform.system() == "Windows":
-        if os.environ.get("LOCALAPPDATA"):
-            system_playit.append(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "playit" / "playit.exe")
-        if os.environ.get("ProgramFiles"):
-            system_playit.append(Path(os.environ["ProgramFiles"]) / "playit" / "playit.exe")
     playit_installed = bool(
         shutil.which("playit")
         or shutil.which("playit-cli")
-        or any(bundled_playit.glob("playit*"))
-        or any(candidate.is_file() for candidate in system_playit)
+        or (bundled_playit / "playit-cli.exe").is_file()
+        or (bundled_playit / "playit-cli").is_file()
+        or any(candidate.is_file() for candidate in manager.playit_executable_candidates())
     )
     account_ready = manager.playit_credential_ready()
     onboarding = manager.load_json(ONBOARDING_FILE) if ONBOARDING_FILE.is_file() else {}
@@ -481,6 +472,8 @@ def setup_status() -> dict:
         "canCreateServer": can_create_server,
         "setupError": setup_error,
         "claimUrl": current_job.get("claimUrl") if current_job.get("kind") == "playit setup" else None,
+        "playitManualPath": str(bundled_playit / ("playit.exe" if platform.system() == "Windows" else "playit")),
+        "playitPortableUrl": manager.PLAYIT_PORTABLE_URL if platform.system() == "Windows" else None,
         "steps": [
             {"id": "runtime", "title": "BlockOps ready", "done": sys.version_info >= (3, 10), "help": "Run setup.command on macOS or setup.bat on Windows."},
             {"id": "agent", "title": "Install Playit", "done": playit_installed, "help": "BlockOps installs the official portable agent on Windows. macOS requires the official Playit download."},
@@ -499,6 +492,36 @@ def confirm_playit_tunnel() -> dict:
     data["confirmedAt"] = now_iso()
     manager.save_json(ONBOARDING_FILE, data)
     return setup_status()
+
+
+def install_playit_executable(source, length: int, filename: str) -> Path:
+    """Validate and atomically store a user-selected portable Playit executable."""
+    if platform.system() != "Windows":
+        raise manager.ManagerError("Manual Playit file setup is only available on Windows.")
+    if length <= 0 or length > MAX_PLAYIT_UPLOAD:
+        raise manager.ManagerError("Choose a Playit .exe smaller than 100 MB.")
+    if not Path(filename).name.lower().endswith(".exe"):
+        raise manager.ManagerError("Choose the portable Playit Windows .exe, not the .msi installer.")
+    destination = manager.ROOT / "runtimes" / "playit" / "playit.exe"
+    temporary = destination.with_suffix(".exe.upload")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with temporary.open("wb") as handle:
+            remaining = length
+            while remaining:
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise manager.ManagerError("The Playit file transfer ended unexpectedly.")
+                handle.write(chunk)
+                remaining -= len(chunk)
+        with temporary.open("rb") as handle:
+            if handle.read(2) != b"MZ":
+                raise manager.ManagerError("That file is not a valid Windows executable.")
+        temporary.replace(destination)
+        return destination
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def parse_spark_observations(profile: dict) -> dict:
@@ -1436,6 +1459,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if not self.require_auth() or not self.valid_origin():
+            return
+        if parsed.path == "/api/setup/playit-executable":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                filename = urllib.parse.unquote(self.headers.get("X-File-Name", ""))
+                destination = install_playit_executable(self.rfile, length, filename)
+                self.send_json({
+                    "ok": True,
+                    "message": "Playit was placed where BlockOps can find it. Continue to connect your account.",
+                    "path": str(destination),
+                })
+            except (manager.ManagerError, OSError, ValueError) as error:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
             return
         mod_match = re.fullmatch(r"/api/profiles/([^/]+)/mods/([^/]+)", parsed.path)
         backup_match = re.fullmatch(r"/api/profiles/([^/]+)/backups/([^/]+)", parsed.path)

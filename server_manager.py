@@ -42,6 +42,10 @@ PLAYIT_PID = STATE / "playit.pid"
 PLAYIT_LOG = STATE / "playit.log"
 PLAYIT_CONFIG = ROOT / "playit.toml"
 PLAYIT_SOCKET = STATE / "playit.sock"
+PLAYIT_PORTABLE_URL = (
+    "https://github.com/playit-cloud/playit-agent/releases/download/"
+    "v0.17.1/playit-windows-x86_64-signed.exe"
+)
 DEFAULT_PORT = 25565
 IS_WINDOWS = os.name == "nt"
 # Legacy fallbacks are intentionally unchanged so profiles created before
@@ -485,22 +489,36 @@ def port_open(port: int) -> bool:
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
-def playit_executable() -> Path:
+def playit_executable_candidates() -> list[Path]:
+    """Return supported Playit locations, including the official Windows install folders."""
     override = os.environ.get("PLAYIT_EXECUTABLE")
-    path_candidates = [
+    def windows_install_path(variable: str, *parts: str) -> Path | None:
+        base = os.environ.get(variable)
+        return Path(base, *parts) if IS_WINDOWS and base else None
+
+    path_candidates: list[Path | None] = [
         Path(override).expanduser() if override else None,
+        ROOT / "runtimes" / "playit" / ("playit.exe" if IS_WINDOWS else "playit"),
         Path("/Applications/playit.app/Contents/MacOS/playit") if not IS_WINDOWS else None,
         Path("/Applications/Playit.app/Contents/MacOS/playit") if not IS_WINDOWS else None,
-        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "playit" / "playit.exe" if IS_WINDOWS else None,
-        Path(os.environ.get("ProgramFiles", "")) / "playit" / "playit.exe" if IS_WINDOWS else None,
+        windows_install_path("LOCALAPPDATA", "playit_gg", "bin", "playit.exe"),
+        windows_install_path("LOCALAPPDATA", "Programs", "playit", "playit.exe"),
+        windows_install_path("LOCALAPPDATA", "Programs", "playit_gg", "bin", "playit.exe"),
+        windows_install_path("ProgramFiles", "playit", "playit.exe"),
+        windows_install_path("ProgramFiles", "playit_gg", "bin", "playit.exe"),
+        windows_install_path("ProgramFiles(x86)", "playit_gg", "bin", "playit.exe"),
         ROOT.parent / "playit-agent" / "target" / "release" / "agent",
         Path.home() / ".local" / "bin" / "playit",
     ]
     found = shutil.which("playit") or shutil.which("playit-cli")
     if found:
         path_candidates.insert(0, Path(found))
-    for candidate in path_candidates:
-        if candidate and candidate.is_file() and os.access(candidate, os.X_OK):
+    return list(dict.fromkeys(candidate for candidate in path_candidates if candidate))
+
+
+def playit_executable() -> Path:
+    for candidate in playit_executable_candidates():
+        if candidate.is_file() and (IS_WINDOWS or os.access(candidate, os.X_OK)):
             return candidate.resolve()
 
     if not IS_WINDOWS:
@@ -536,6 +554,24 @@ def playit_executable() -> Path:
     return destination
 
 
+def modern_playit_binaries() -> tuple[Path, Path] | None:
+    """Find a modern playitd + CLI pair in BlockOps or an official Windows installation."""
+    folders = [ROOT / "runtimes" / "playit"]
+    if IS_WINDOWS:
+        folders.extend(
+            candidate.parent
+            for candidate in playit_executable_candidates()
+            if candidate.name.lower() == "playit.exe"
+        )
+    for folder in dict.fromkeys(folders):
+        daemon = folder / ("playitd.exe" if IS_WINDOWS else "playitd")
+        cli_names = ("playit-cli.exe", "playit.exe") if IS_WINDOWS else ("playit-cli", "playit")
+        cli = next((folder / name for name in cli_names if (folder / name).is_file()), None)
+        if daemon.is_file() and cli:
+            return daemon.resolve(), cli.resolve()
+    return None
+
+
 def playit_output_since(offset: int) -> str:
     if not PLAYIT_LOG.exists():
         return ""
@@ -565,6 +601,30 @@ def setup_playit() -> None:
         return
 
     pid, log_offset = start_playit()
+    modern = modern_playit_binaries()
+    if modern:
+        _, cli = modern
+        print("Waiting for the Playit service to become ready …")
+        deadline = time.time() + 15
+        while time.time() < deadline and is_alive(pid):
+            status = subprocess.run(
+                [cli, "--socket-path", PLAYIT_SOCKET, "status"], text=True, capture_output=True
+            )
+            if "Phase: waiting for secret" in status.stdout:
+                break
+            if "Phase: running" in status.stdout and playit_credential_ready():
+                print("Playit account is already connected.")
+                return
+            time.sleep(0.5)
+        else:
+            raise ManagerError(f"Playit started but its local service did not become ready. Review {PLAYIT_LOG}")
+        print("Playit is ready. Open the secure claim URL below and approve this computer.")
+        result = subprocess.run([cli, "--socket-path", PLAYIT_SOCKET, "setup"])
+        if result.returncode or not playit_credential_ready():
+            raise ManagerError("The Playit account claim was not completed. Retry and approve the agent in your browser.")
+        print("Playit account connected successfully.")
+        return
+
     print("Waiting for Playit to prepare a secure account claim …")
     deadline = time.time() + 45
     while time.time() < deadline and is_alive(pid):
@@ -590,11 +650,11 @@ def start_playit() -> tuple[int, int]:
     current = read_pid(PLAYIT_PID)
     if current:
         return current, log_offset
-    modern_daemon = ROOT / "runtimes" / "playit" / ("playitd.exe" if IS_WINDOWS else "playitd")
-    modern_cli = ROOT / "runtimes" / "playit" / ("playit-cli.exe" if IS_WINDOWS else "playit-cli")
+    modern = modern_playit_binaries()
     STATE.mkdir(parents=True, exist_ok=True)
     log = PLAYIT_LOG.open("ab", buffering=0)
-    if modern_daemon.is_file() and modern_cli.is_file():
+    if modern:
+        modern_daemon, _ = modern
         PLAYIT_SOCKET.unlink(missing_ok=True)
         process = subprocess.Popen(
             [modern_daemon, "--secret-path", PLAYIT_CONFIG, "--socket-path", PLAYIT_SOCKET, "--log-path", PLAYIT_LOG],
@@ -616,8 +676,9 @@ def start_playit() -> tuple[int, int]:
 
 def ensure_playit_enabled(pid: int, log_offset: int, timeout: int = 30) -> None:
     """Require account claim/tunnel setup before Minecraft is launched."""
-    modern_cli = ROOT / "runtimes" / "playit" / ("playit-cli.exe" if IS_WINDOWS else "playit-cli")
-    if modern_cli.is_file():
+    modern = modern_playit_binaries()
+    if modern:
+        _, modern_cli = modern
         deadline = time.time() + timeout
         status = None
         while time.time() < deadline and is_alive(pid):

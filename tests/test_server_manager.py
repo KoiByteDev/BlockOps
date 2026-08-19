@@ -22,6 +22,7 @@ class ServerManagerTests(unittest.TestCase):
         claim = "https://playit.gg/claim/new456"
         with mock.patch.object(manager, "playit_credential_ready", return_value=False), \
              mock.patch.object(manager, "start_playit", return_value=(123, 0)), \
+             mock.patch.object(manager, "modern_playit_binaries", return_value=None), \
              mock.patch.object(manager, "is_alive", return_value=True), \
              mock.patch.object(manager, "playit_output_since", return_value=f"claim {claim}"):
             with self.assertRaisesRegex(manager.ManagerError, "Finish the secure Playit account claim"):
@@ -32,6 +33,51 @@ class ServerManagerTests(unittest.TestCase):
              mock.patch.object(manager, "start_playit", return_value=(123, 0)) as start:
             manager.setup_playit()
         start.assert_called_once_with()
+
+    def test_playit_setup_uses_modern_cli_for_official_windows_install(self):
+        daemon, cli = Path("playitd.exe"), Path("playit.exe")
+        status = mock.Mock(returncode=0, stdout="Phase: waiting for secret")
+        completed = mock.Mock(returncode=0, stdout="")
+        with mock.patch.object(manager, "playit_credential_ready", side_effect=[False, True]), \
+             mock.patch.object(manager, "start_playit", return_value=(123, 0)), \
+             mock.patch.object(manager, "modern_playit_binaries", return_value=(daemon, cli)), \
+             mock.patch.object(manager, "is_alive", return_value=True), \
+             mock.patch.object(manager.subprocess, "run", side_effect=[status, completed]) as run:
+            manager.setup_playit()
+        self.assertEqual(run.call_args_list[-1].args[0], [cli, "--socket-path", manager.PLAYIT_SOCKET, "setup"])
+
+    def test_windows_playit_candidates_include_official_installer_folder(self):
+        with mock.patch.object(manager, "IS_WINDOWS", True), \
+             mock.patch.dict(manager.os.environ, {"ProgramFiles": r"C:\Program Files"}, clear=True), \
+             mock.patch.object(manager.shutil, "which", return_value=None):
+            candidates = manager.playit_executable_candidates()
+        self.assertIn(Path(r"C:\Program Files") / "playit_gg" / "bin" / "playit.exe", candidates)
+
+    def test_windows_playit_accepts_manually_placed_executable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "runtimes" / "playit" / "playit.exe"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"MZportable")
+            with mock.patch.object(manager, "IS_WINDOWS", True), \
+                 mock.patch.object(manager, "ROOT", root), \
+                 mock.patch.object(manager.shutil, "which", return_value=None), \
+                 mock.patch.dict(manager.os.environ, {}, clear=True):
+                self.assertEqual(manager.playit_executable(), executable.resolve())
+
+    def test_windows_playit_finds_modern_official_installation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            program_files = Path(directory)
+            bin_folder = program_files / "playit_gg" / "bin"
+            bin_folder.mkdir(parents=True)
+            daemon = bin_folder / "playitd.exe"
+            cli = bin_folder / "playit.exe"
+            daemon.write_bytes(b"MZdaemon")
+            cli.write_bytes(b"MZcli")
+            with mock.patch.object(manager, "IS_WINDOWS", True), \
+                 mock.patch.dict(manager.os.environ, {"ProgramFiles": str(program_files)}, clear=True), \
+                 mock.patch.object(manager.shutil, "which", return_value=None):
+                self.assertEqual(manager.modern_playit_binaries(), (daemon.resolve(), cli.resolve()))
 
     def test_required_java_uses_mojang_metadata(self):
         with mock.patch.object(manager, "minecraft_details", return_value={"javaVersion": {"majorVersion": 21}}):

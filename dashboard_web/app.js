@@ -230,7 +230,7 @@ function setupRecovery(error) {
   if (/metadata request|download failed|urlopen|timed out|internet/i.test(message)) return {
     title: "PLAYIT COULD NOT DOWNLOAD",
     copy: "BlockOps could not reach the official Playit files. Your worlds and settings were not changed.",
-    tips: ["Confirm this computer can open github.com.", "Allow BlockOps/Python through the firewall or antivirus.", "Retry, or install Playit from the official download page."],
+    tips: ["Confirm this computer can open github.com.", "Allow BlockOps/Python through the firewall or antivirus.", "Use the guided Windows fix below if your browser can download Playit."],
   };
   if (/exited|access|permission|denied|blocked/i.test(message)) return {
     title: "THE PLAYIT AGENT WAS BLOCKED",
@@ -332,6 +332,42 @@ function renderSetupGuide(data) {
     $("#setup-error-tips").innerHTML = recovery.tips.map((tip) => `<li>${escapeHtml(tip)}</li>`).join("");
   } else {
     errorPanel.hidden = true;
+  }
+
+  const manual = $("#playit-manual");
+  manual.hidden = data.platform !== "Windows" || (data.playitInstalled && !data.setupError);
+  if (!manual.hidden) {
+    $("#playit-manual-path").textContent = data.playitManualPath;
+    $("#playit-portable-download").href = data.playitPortableUrl;
+  }
+}
+
+async function installDownloadedPlayit(files) {
+  const file = files?.[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith(".exe")) {
+    toast("Choose the portable Playit .exe. Run an .msi installer normally, then click Check again.", "error");
+    return;
+  }
+  const button = $("#playit-file-button");
+  const original = button.textContent;
+  try {
+    button.disabled = true;
+    button.textContent = "PLACING PLAYIT…";
+    const response = await api("/api/setup/playit-executable", {
+      method: "PUT",
+      headers: { "Content-Type": "application/vnd.microsoft.portable-executable", "X-File-Name": encodeURIComponent(file.name) },
+      body: file,
+    });
+    toast(response.message);
+    await refreshState(true);
+    await openSetupGuide();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+    $("#playit-file-input").value = "";
   }
 }
 
@@ -825,6 +861,14 @@ function wireEvents() {
   for (const button of [$("#create-server"), $("#empty-create")]) button.addEventListener("click", openCreateModal);
   $("#setup-guide").addEventListener("click", openSetupGuide);
   $("#setup-check-action").addEventListener("click", openSetupGuide);
+  $("#playit-file-button").addEventListener("click", () => $("#playit-file-input").click());
+  $("#playit-file-input").addEventListener("change", (event) => installDownloadedPlayit(event.target.files));
+  $("#playit-copy-path").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText($("#playit-manual-path").textContent);
+      toast("Playit folder path copied.");
+    } catch { toast("Could not copy the path. Select it and copy it manually.", "error"); }
+  });
   $("#setup-primary-action").addEventListener("click", async (event) => {
     const action = event.currentTarget.dataset.setupAction;
     if (action === "install" || action === "connect") {

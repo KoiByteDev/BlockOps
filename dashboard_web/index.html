@@ -318,6 +318,25 @@
       <section class="setup-error" id="setup-error" hidden>
         <span>!</span><div><strong id="setup-error-title">PLAYIT NEEDS ATTENTION</strong><p id="setup-error-copy"></p><ul id="setup-error-tips"></ul><a href="https://playit.gg/download" target="_blank" rel="noreferrer">Open the official Playit download ↗</a></div>
       </section>
+      <section class="playit-manual" id="playit-manual" hidden>
+        <div class="playit-manual-heading"><span>WINDOWS FIX</span><div><strong>ALREADY DOWNLOADED PLAYIT?</strong><p>Let BlockOps place the portable agent correctly, or follow the File Explorer steps below.</p></div></div>
+        <div class="playit-manual-actions">
+          <a class="mc-button" id="playit-portable-download" target="_blank" rel="noreferrer">1. DOWNLOAD OFFICIAL .EXE ↗</a>
+          <button class="mc-button primary" type="button" id="playit-file-button">2. CHOOSE DOWNLOADED .EXE</button>
+          <input id="playit-file-input" type="file" accept=".exe,application/vnd.microsoft.portable-executable" hidden>
+        </div>
+        <ol>
+          <li>Download the official portable Windows <strong>.exe</strong> above. If you downloaded an <strong>.msi</strong>, run it first, then click “Check again.”</li>
+          <li>Click “Choose downloaded .exe” and select the Playit file in your Downloads folder. BlockOps will copy it to the correct location.</li>
+          <li>Click “Connect account” and approve the agent on playit.gg.</li>
+        </ol>
+        <details>
+          <summary>MOVE IT YOURSELF WITH FILE EXPLORER</summary>
+          <ol><li>Create the folder shown below if it does not exist.</li><li>Rename the portable download to <strong>playit.exe</strong>.</li><li>Move it into that folder, return here, and click “Check again.”</li></ol>
+          <div class="playit-path"><code id="playit-manual-path"></code><button type="button" id="playit-copy-path">COPY PATH</button></div>
+        </details>
+        <p class="playit-safety">Only select a Playit file downloaded from the official playit.gg page or playit-cloud GitHub release.</p>
+      </section>
       <div class="setup-target"><span>LOCAL TARGET</span><strong>127.0.0.1:25565</strong><small>Choose “Minecraft Java” in Playit. Never enter your public Playit address here.</small></div>
       <div class="setup-privacy"><span>◆</span><p><strong>Your account stays private.</strong> Sign-in and agent approval happen on playit.gg. BlockOps only checks the local credential created after approval.</p></div>
     </section>
