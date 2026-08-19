@@ -9,12 +9,39 @@ import dashboard
 
 
 class DashboardTests(unittest.TestCase):
-    def test_setup_status_is_read_only_and_reports_world_step(self):
-        with mock.patch.object(dashboard.manager, "registry", return_value={"profiles": []}):
+    def test_setup_status_gates_first_world_behind_playit(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(dashboard, "ONBOARDING_FILE", Path(directory) / "onboarding.json"), \
+             mock.patch.object(dashboard.manager, "registry", return_value={"profiles": []}), \
+             mock.patch.object(dashboard.manager, "playit_credential_ready", return_value=False), \
+             mock.patch.object(dashboard.manager, "read_pid", return_value=None):
             result = dashboard.setup_status()
         self.assertTrue(result["pythonReady"])
         self.assertFalse(result["profileReady"])
-        self.assertEqual([step["id"] for step in result["steps"]], ["runtime", "world", "playit"])
+        self.assertFalse(result["canCreateServer"])
+        self.assertEqual(
+            [step["id"] for step in result["steps"]],
+            ["runtime", "agent", "account", "tunnel", "world"],
+        )
+
+    def test_existing_profiles_are_not_blocked_by_new_onboarding_gate(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(dashboard, "ONBOARDING_FILE", Path(directory) / "onboarding.json"), \
+             mock.patch.object(dashboard.manager, "registry", return_value={"profiles": [{"id": "legacy"}]}), \
+             mock.patch.object(dashboard.manager, "playit_credential_ready", return_value=False), \
+             mock.patch.object(dashboard.manager, "read_pid", return_value=None):
+            self.assertTrue(dashboard.setup_status()["canCreateServer"])
+
+    def test_confirming_tunnel_persists_first_run_completion(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(dashboard, "ONBOARDING_FILE", Path(directory) / "onboarding.json"), \
+             mock.patch.object(dashboard.manager, "registry", return_value={"profiles": []}), \
+             mock.patch.object(dashboard.manager, "playit_credential_ready", return_value=True), \
+             mock.patch.object(dashboard.manager, "read_pid", return_value=123):
+            result = dashboard.confirm_playit_tunnel()
+            saved = dashboard.manager.load_json(dashboard.ONBOARDING_FILE)
+        self.assertTrue(result["canCreateServer"])
+        self.assertTrue(saved["playitTunnelConfirmed"])
 
     def test_properties_are_updated_without_losing_comments(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -18,6 +18,21 @@ class ServerManagerTests(unittest.TestCase):
     def test_claim_url_absent_for_enabled_agent(self):
         self.assertIsNone(manager.claim_url_from_output("agent registered; tunnel running"))
 
+    def test_playit_setup_surfaces_claim_url_without_creating_a_world(self):
+        claim = "https://playit.gg/claim/new456"
+        with mock.patch.object(manager, "playit_credential_ready", return_value=False), \
+             mock.patch.object(manager, "start_playit", return_value=(123, 0)), \
+             mock.patch.object(manager, "is_alive", return_value=True), \
+             mock.patch.object(manager, "playit_output_since", return_value=f"claim {claim}"):
+            with self.assertRaisesRegex(manager.ManagerError, "Finish the secure Playit account claim"):
+                manager.setup_playit()
+
+    def test_playit_setup_reuses_connected_agent(self):
+        with mock.patch.object(manager, "playit_credential_ready", return_value=True), \
+             mock.patch.object(manager, "start_playit", return_value=(123, 0)) as start:
+            manager.setup_playit()
+        start.assert_called_once_with()
+
     def test_required_java_uses_mojang_metadata(self):
         with mock.patch.object(manager, "minecraft_details", return_value={"javaVersion": {"majorVersion": 21}}):
             self.assertEqual(manager.required_java("1.21.8"), 21)

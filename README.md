@@ -29,14 +29,16 @@ No system Python or Java installation is required. The first-run installer downl
 
 Setup is safe to run again. It reuses the private runtime and verifies the app before opening it. Developer tests are not required for installation, so a release copy without the `tests` folder still installs normally.
 
-## First server
+## First-time connection setup
 
-1. Choose **Create Server**, enter a Minecraft version, select Vanilla/Fabric/Forge, and choose RAM limits.
-2. BlockOps validates the version and downloads Minecraft plus the correct Temurin Java runtime. Forge requires an exact Forge version; Fabric can select the latest stable loader automatically.
-3. Choose **Start Server**. On Windows, BlockOps downloads the signed official portable Playit agent. On macOS, use **Setup Guide → Get Playit** once and run the current official Mac agent; BlockOps will then locate it.
-4. If the progress drawer shows **Claim Playit Agent**, open that link, approve the agent, and create a **Minecraft Java** tunnel targeting `127.0.0.1:25565`. Then choose Start again.
+Before creating the first server, BlockOps opens a guided connection setup:
 
-The **Setup Guide** button in the app shows these milestones and tells the user what remains. Playit is the only account step BlockOps cannot perform on the user's behalf.
+1. On Windows, choose **Install Playit**. BlockOps downloads the signed official portable agent. On macOS, use the official Playit download link, install the app, and return to BlockOps.
+2. Choose **Connect Account**, open the one-time **Claim Playit Agent** link, and approve this computer on playit.gg. Account credentials are entered only on Playit's site.
+3. Open **Playit Tunnels**, create a **Minecraft Java** tunnel targeting `127.0.0.1:25565`, and confirm that step in BlockOps.
+4. Choose **Create My First Server**, enter a Minecraft version, select Vanilla/Fabric/Forge, and choose RAM limits. BlockOps validates the version and downloads Minecraft plus the correct Java runtime. Forge requires an exact Forge version; Fabric can select the latest stable loader automatically.
+
+The **Setup Guide** reports installation, account, and tunnel status separately and provides recovery guidance when a download, firewall, antivirus, permission, or agent-start problem occurs. Existing installations with servers are never blocked by this newly introduced first-run gate.
 
 ## Terminal tools
 

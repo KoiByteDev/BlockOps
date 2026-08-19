@@ -15,6 +15,7 @@ const state = {
   settingsDirty: false,
   backupPolicyDirty: false,
   performance: null,
+  setup: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -141,6 +142,18 @@ function render() {
   const profile = selectedProfile();
   $("#empty-state").hidden = Boolean(profile);
   $("#dashboard-content").hidden = !profile;
+  state.setup = state.data.setup || state.setup;
+  if (!profile) {
+    const setupNeeded = state.setup && !state.setup.canCreateServer;
+    $("#empty-eyebrow").textContent = setupNeeded ? "ONE STEP BEFORE YOUR FIRST WORLD" : "NO WORLDS FOUND";
+    $("#empty-title").textContent = setupNeeded ? "CONNECT YOUR SERVER SAFELY" : "BUILD YOUR FIRST SERVER";
+    $("#empty-copy").textContent = setupNeeded
+      ? "Prepare Playit now so your first server can start without an unexpected networking interruption."
+      : "Create a Vanilla, Fabric, or Forge world and manage it all from here.";
+    $("#empty-create").textContent = setupNeeded ? "SET UP PLAYIT" : "CREATE SERVER";
+  }
+  renderJob(state.data.job);
+  if (!$("#setup-modal").hidden && state.setup) renderSetupGuide(state.setup);
   if (!profile) return;
   const running = profile.status === "online" || profile.status === "starting";
   $("#selected-type").textContent = `MINECRAFT ${profile.minecraftVersion} · ${profile.loader.toUpperCase()} SERVER`;
@@ -159,7 +172,6 @@ function render() {
   $("#console-light").classList.toggle("online", running);
   populateSettings(profile);
   populateBackupSettings(profile);
-  renderJob(state.data.job);
 }
 
 function renderJob(current) {
@@ -179,6 +191,7 @@ function renderJob(current) {
     toast(current.message, current.status === "failed" ? "error" : "success");
     if (current.kind === "create" && current.status === "succeeded") closeCreateModal();
     if (current.kind === "restore backup" && current.status === "succeeded") loadBackups();
+    if (current.kind === "playit setup") openSetupGuide();
     if (current.kind === "start" && current.status === "failed" && /playit is not installed/i.test(current.message || "")) openSetupGuide();
   }
   state.lastJobId = current.id;
@@ -205,9 +218,120 @@ async function openSetupGuide() {
   list.innerHTML = "<p>Checking this computer…</p>";
   try {
     const data = await api("/api/setup");
-    list.innerHTML = data.steps.map((step, index) => `<article class="setup-step ${step.done ? "done" : ""}"><i>${step.done ? "✓" : index + 1}</i><div><strong>${escapeHtml(step.title)}</strong><span>${escapeHtml(step.done ? "Ready." : step.help)}</span></div></article>`).join("");
+    state.setup = data;
+    renderSetupGuide(data);
   } catch (error) {
     list.innerHTML = `<p>${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function setupRecovery(error) {
+  const message = String(error || "");
+  if (/metadata request|download failed|urlopen|timed out|internet/i.test(message)) return {
+    title: "PLAYIT COULD NOT DOWNLOAD",
+    copy: "BlockOps could not reach the official Playit files. Your worlds and settings were not changed.",
+    tips: ["Confirm this computer can open github.com.", "Allow BlockOps/Python through the firewall or antivirus.", "Retry, or install Playit from the official download page."],
+  };
+  if (/exited|access|permission|denied|blocked/i.test(message)) return {
+    title: "THE PLAYIT AGENT WAS BLOCKED",
+    copy: "Windows Security, antivirus, or file permissions may have stopped the agent.",
+    tips: ["Open Windows Security → Protection history and look for playit.exe.", "Only allow the file when its source is the official Playit release.", "Close any other Playit process, then retry."],
+  };
+  return {
+    title: "PLAYIT NEEDS ATTENTION",
+    copy: message || "The connection was not completed. Nothing was changed in your Minecraft files.",
+    tips: ["Make sure Playit is not already open in another window.", "Check the internet connection and retry.", "Use the official Playit download if automatic setup continues to fail."],
+  };
+}
+
+function renderSetupGuide(data) {
+  const list = $("#setup-steps");
+  list.innerHTML = data.steps.map((step, index) => `
+    <article class="setup-step ${step.done ? "done" : ""} ${!step.done && data.steps.slice(0, index).every((item) => item.done) ? "current" : ""}">
+      <i>${step.done ? "✓" : index + 1}</i><div><strong>${escapeHtml(step.title)}</strong><span>${escapeHtml(step.done ? "Ready" : step.help)}</span></div>
+    </article>`).join("");
+
+  const primary = $("#setup-primary-action");
+  const external = $("#setup-external-action");
+  const check = $("#setup-check-action");
+  const running = state.data?.job?.status === "running" && state.data.job.kind === "playit setup";
+  primary.hidden = true;
+  external.hidden = true;
+  check.hidden = false;
+  primary.disabled = running;
+  $("#setup-focus-icon").className = "setup-focus-icon";
+
+  let label = "NEXT STEP";
+  let title;
+  let copy;
+  if (!data.pythonReady) {
+    title = "FINISH BLOCKOPS SETUP";
+    copy = "Run the platform setup launcher, then reopen BlockOps. This installs only BlockOps' private runtime.";
+  } else if (!data.playitInstalled) {
+    title = data.platform === "Windows" ? "INSTALL THE OFFICIAL PLAYIT AGENT" : "INSTALL PLAYIT FOR MACOS";
+    copy = data.platform === "Windows"
+      ? "BlockOps will download the signed portable agent from Playit's official GitHub release. No administrator access is required."
+      : "macOS requires Playit's official app. Download it, open it once, then return here.";
+    if (data.platform === "Windows") {
+      primary.hidden = false;
+      primary.textContent = running ? "INSTALLING…" : "INSTALL PLAYIT";
+      primary.dataset.setupAction = "install";
+    } else {
+      external.hidden = false;
+      external.textContent = "DOWNLOAD PLAYIT ↗";
+      external.href = "https://playit.gg/download/macos";
+    }
+  } else if (!data.playitAccountReady) {
+    if (data.claimUrl) {
+      label = "APPROVAL REQUIRED";
+      title = "CLAIM THIS COMPUTER";
+      copy = "Open the secure Playit page, sign in, and approve this agent. Return here afterward—BlockOps will detect the local credential.";
+      external.hidden = false;
+      external.textContent = "CLAIM PLAYIT AGENT ↗";
+      external.href = data.claimUrl;
+      $("#setup-focus-icon").classList.add("attention");
+    } else {
+      title = "CONNECT YOUR PLAYIT ACCOUNT";
+      copy = "Start the local agent to generate a one-time claim page. Account sign-in stays entirely on playit.gg.";
+      primary.hidden = false;
+      primary.textContent = running ? "PREPARING CLAIM…" : "CONNECT ACCOUNT";
+      primary.dataset.setupAction = "connect";
+    }
+  } else if (!data.tunnelConfirmed) {
+    label = "BROWSER STEP";
+    title = "CREATE A MINECRAFT JAVA TUNNEL";
+    copy = "In Playit, add a Minecraft Java tunnel and set its local address to 127.0.0.1:25565. Save it, then confirm below.";
+    external.hidden = false;
+    external.textContent = "OPEN PLAYIT TUNNELS ↗";
+    external.href = "https://playit.gg/account/tunnels";
+    primary.hidden = false;
+    primary.textContent = "I CREATED THE TUNNEL";
+    primary.dataset.setupAction = "confirm-tunnel";
+  } else {
+    label = "SETUP COMPLETE";
+    title = "YOUR CONNECTION IS READY";
+    copy = data.profileReady
+      ? "Playit is configured. Your servers can use the saved tunnel when they start."
+      : "Now create your first world. BlockOps will install Minecraft and Java without interrupting you for network setup.";
+    $("#setup-focus-icon").classList.add("ready");
+    primary.hidden = data.profileReady;
+    primary.textContent = "CREATE MY FIRST SERVER";
+    primary.dataset.setupAction = "create";
+    check.hidden = true;
+  }
+  $("#setup-focus-label").textContent = label;
+  $("#setup-focus-title").textContent = title;
+  $("#setup-focus-copy").textContent = copy;
+
+  const errorPanel = $("#setup-error");
+  if (data.setupError) {
+    const recovery = setupRecovery(data.setupError);
+    errorPanel.hidden = false;
+    $("#setup-error-title").textContent = recovery.title;
+    $("#setup-error-copy").textContent = recovery.copy;
+    $("#setup-error-tips").innerHTML = recovery.tips.map((tip) => `<li>${escapeHtml(tip)}</li>`).join("");
+  } else {
+    errorPanel.hidden = true;
   }
 }
 
@@ -242,6 +366,10 @@ async function loadLog() {
 }
 
 function openCreateModal() {
+  if (!(state.data?.profiles?.length) && state.setup && !state.setup.canCreateServer) {
+    openSetupGuide();
+    return;
+  }
   $("#create-modal").hidden = false;
   setTimeout(() => $("#create-form [name=name]").focus(), 30);
 }
@@ -696,6 +824,26 @@ function wireEvents() {
   $("#mobile-menu").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
   for (const button of [$("#create-server"), $("#empty-create")]) button.addEventListener("click", openCreateModal);
   $("#setup-guide").addEventListener("click", openSetupGuide);
+  $("#setup-check-action").addEventListener("click", openSetupGuide);
+  $("#setup-primary-action").addEventListener("click", async (event) => {
+    const action = event.currentTarget.dataset.setupAction;
+    if (action === "install" || action === "connect") {
+      try {
+        await runAction("/api/jobs/setup-playit");
+        await openSetupGuide();
+      } catch {}
+    } else if (action === "confirm-tunnel") {
+      try {
+        state.setup = await api("/api/setup/tunnel-confirmed", { method: "POST", body: "{}" });
+        await refreshState(true);
+        renderSetupGuide(state.setup);
+        toast("Playit tunnel confirmed. You are ready to create a server.");
+      } catch (error) { toast(error.message, "error"); }
+    } else if (action === "create") {
+      closeSetupGuide();
+      openCreateModal();
+    }
+  });
   $$('[data-close-setup]').forEach((button) => button.addEventListener("click", closeSetupGuide));
   $("#setup-modal").addEventListener("click", (event) => { if (event.target === $("#setup-modal")) closeSetupGuide(); });
   $$('[data-close-modal]').forEach((button) => button.addEventListener("click", closeCreateModal));

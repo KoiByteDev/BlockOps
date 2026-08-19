@@ -36,6 +36,7 @@ HOST = "127.0.0.1"
 PORT = 8765
 WEB_ROOT = Path(__file__).resolve().parent / "dashboard_web"
 TOKEN_FILE = manager.STATE / "dashboard-token"
+ONBOARDING_FILE = manager.STATE / "onboarding.json"
 MAX_JSON_BODY = 3 * 1024 * 1024
 MAX_MOD_UPLOAD = 1024 * 1024 * 1024
 MAX_BACKUP_UPLOAD = 50 * 1024 * 1024 * 1024
@@ -104,6 +105,15 @@ def append_job_line(line: str) -> None:
     with job_lock:
         job["lines"].append(clean)
         job["lines"] = job["lines"][-300:]
+        claim_urls = re.findall(r"https://playit\.gg/claim/[A-Za-z0-9]+", clean)
+        if claim_urls:
+            job["claimUrl"] = claim_urls[-1]
+            job["message"] = "Playit is ready to connect. Complete the secure account claim in your browser."
+        elif job.get("kind") == "playit setup":
+            if "Downloading playit" in clean:
+                job["message"] = "Downloading the official Playit agent…"
+            elif "Waiting for Playit" in clean:
+                job["message"] = "Preparing a secure Playit account claim…"
 
 
 def run_job(kind: str, profile_id: str | None, command: list[str]) -> None:
@@ -158,7 +168,7 @@ def start_job(kind: str, profile_id: str | None, args: list[str]) -> dict:
                 "claimUrl": None,
             }
         )
-    command = [sys.executable, str(manager.ROOT / "server_manager.py"), *args]
+    command = [sys.executable, "-u", str(manager.ROOT / "server_manager.py"), *args]
     threading.Thread(target=run_job, args=(kind, profile_id, command), daemon=True).start()
     return public_job()
 
@@ -428,29 +438,67 @@ def setup_status() -> dict:
     """Return user-facing onboarding checks without changing the machine."""
     profiles = manager.registry().get("profiles", [])
     bundled_playit = manager.ROOT / "runtimes" / "playit"
-    playit_ready = bool(
+    system_playit = []
+    if platform.system() == "Darwin":
+        system_playit = [
+            Path("/Applications/playit.app/Contents/MacOS/playit"),
+            Path("/Applications/Playit.app/Contents/MacOS/playit"),
+        ]
+    elif platform.system() == "Windows":
+        if os.environ.get("LOCALAPPDATA"):
+            system_playit.append(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "playit" / "playit.exe")
+        if os.environ.get("ProgramFiles"):
+            system_playit.append(Path(os.environ["ProgramFiles"]) / "playit" / "playit.exe")
+    playit_installed = bool(
         shutil.which("playit")
         or shutil.which("playit-cli")
         or any(bundled_playit.glob("playit*"))
-        or (Path("/Applications/playit.app/Contents/MacOS/playit").is_file() if platform.system() == "Darwin" else False)
+        or any(candidate.is_file() for candidate in system_playit)
     )
-    playit_help = (
-        "Download and run Playit for macOS, then return here. On first start, approve the agent and create a Minecraft Java tunnel to 127.0.0.1:25565."
-        if platform.system() == "Darwin"
-        else "Start the server. BlockOps installs Playit; then open the claim link it shows and create a Minecraft Java tunnel to 127.0.0.1:25565."
+    account_ready = manager.playit_credential_ready()
+    onboarding = manager.load_json(ONBOARDING_FILE) if ONBOARDING_FILE.is_file() else {}
+    tunnel_confirmed = bool(onboarding.get("playitTunnelConfirmed"))
+    existing_installation = bool(profiles)
+    can_create_server = bool(
+        sys.version_info >= (3, 10)
+        and (existing_installation or (account_ready and tunnel_confirmed))
+    )
+    current_job = public_job()
+    setup_error = (
+        current_job["message"]
+        if current_job.get("kind") == "playit setup" and current_job.get("status") == "failed"
+        else None
     )
     return {
         "platform": platform.system(),
         "python": platform.python_version(),
         "pythonReady": sys.version_info >= (3, 10),
         "profileReady": bool(profiles),
-        "playitReady": playit_ready,
+        "playitInstalled": playit_installed,
+        "playitAccountReady": account_ready,
+        "playitRunning": bool(manager.read_pid(manager.PLAYIT_PID)),
+        "tunnelConfirmed": tunnel_confirmed,
+        "canCreateServer": can_create_server,
+        "setupError": setup_error,
+        "claimUrl": current_job.get("claimUrl") if current_job.get("kind") == "playit setup" else None,
         "steps": [
-            {"id": "runtime", "title": "App runtime", "done": sys.version_info >= (3, 10), "help": "Run setup.command on macOS or setup.bat on Windows."},
-            {"id": "world", "title": "Minecraft world", "done": bool(profiles), "help": "Choose Create Server. BlockOps installs the matching Java and Minecraft files for you."},
-            {"id": "playit", "title": "Friends can connect", "done": playit_ready, "help": playit_help},
+            {"id": "runtime", "title": "BlockOps ready", "done": sys.version_info >= (3, 10), "help": "Run setup.command on macOS or setup.bat on Windows."},
+            {"id": "agent", "title": "Install Playit", "done": playit_installed, "help": "BlockOps installs the official portable agent on Windows. macOS requires the official Playit download."},
+            {"id": "account", "title": "Connect your account", "done": account_ready, "help": "Claim this computer's agent in your browser. BlockOps never sees your Playit password."},
+            {"id": "tunnel", "title": "Create the Minecraft tunnel", "done": tunnel_confirmed, "help": "Create a Minecraft Java tunnel targeting 127.0.0.1:25565, then confirm it here."},
+            {"id": "world", "title": "Create your first server", "done": bool(profiles), "help": "BlockOps will install Minecraft and the correct Java runtime."},
         ],
     }
+
+
+def confirm_playit_tunnel() -> dict:
+    if not manager.playit_credential_ready():
+        raise manager.ManagerError("Connect the Playit agent to your account before confirming the tunnel.")
+    data = manager.load_json(ONBOARDING_FILE) if ONBOARDING_FILE.is_file() else {}
+    data["playitTunnelConfirmed"] = True
+    data["confirmedAt"] = now_iso()
+    manager.save_json(ONBOARDING_FILE, data)
+    return setup_status()
 
 
 def parse_spark_observations(profile: dict) -> dict:
@@ -715,6 +763,7 @@ def dashboard_state() -> dict:
         "playitRunning": bool(playit_pid),
         "job": public_job(),
         "serverTime": now_iso(),
+        "setup": setup_status(),
     }
 
 
@@ -1289,12 +1338,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
 
     def handle_api_post(self, path: str, payload: dict) -> None:
-        if path == "/api/jobs/start":
+        if path == "/api/jobs/setup-playit":
+            self.send_json(start_job("playit setup", None, ["setup", "playit"]), HTTPStatus.ACCEPTED)
+        elif path == "/api/setup/tunnel-confirmed":
+            self.send_json(confirm_playit_tunnel())
+        elif path == "/api/jobs/start":
             profile = profile_for_id(str(payload.get("profileId", "")))
             self.send_json(start_job("start", profile["id"], ["start", "instance", "--profile", profile["id"]]), HTTPStatus.ACCEPTED)
         elif path == "/api/jobs/stop":
             self.send_json(start_job("stop", manager.active_profile()["id"] if manager.active_profile() else None, ["stop", "instance"]), HTTPStatus.ACCEPTED)
         elif path == "/api/jobs/create":
+            if not manager.registry().get("profiles") and not setup_status()["canCreateServer"]:
+                raise manager.ManagerError(
+                    "Finish Playit setup before creating your first server. Open Setup Guide to continue."
+                )
             name = str(payload.get("name", "")).strip()
             version = str(payload.get("minecraftVersion", "")).strip()
             loader = str(payload.get("loader", "vanilla")).lower()

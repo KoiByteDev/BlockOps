@@ -43,9 +43,9 @@
     <main class="main" id="main-content">
       <section class="empty-state" id="empty-state" hidden>
         <div class="empty-cube"><span></span></div>
-        <p class="eyebrow">NO WORLDS FOUND</p>
-        <h1>BUILD YOUR FIRST SERVER</h1>
-        <p>Create a Vanilla, Fabric, or Forge world and manage it all from here.</p>
+        <p class="eyebrow" id="empty-eyebrow">NO WORLDS FOUND</p>
+        <h1 id="empty-title">BUILD YOUR FIRST SERVER</h1>
+        <p id="empty-copy">Create a Vanilla, Fabric, or Forge world and manage it all from here.</p>
         <button class="mc-button primary" id="empty-create">CREATE SERVER</button>
       </section>
 
@@ -303,11 +303,23 @@
 
   <div class="modal-backdrop" id="setup-modal" hidden>
     <section class="modal setup-modal block-panel" role="dialog" aria-modal="true" aria-labelledby="setup-title">
-      <div class="modal-header"><div><p class="eyebrow">FIRST-RUN GUIDE</p><h2 id="setup-title">GET READY TO PLAY</h2></div><button class="close-button" data-close-setup aria-label="Close">×</button></div>
-      <p class="setup-intro">BlockOps handles the technical downloads. These are the only milestones you may need to complete.</p>
-      <div class="setup-steps" id="setup-steps"><p>Checking this computer…</p></div>
-      <div class="setup-tip"><strong>Moving an existing world?</strong><span>Create the server first, stop it, then replace its world folder while the server is offline.</span></div>
-      <div class="modal-actions"><a class="mc-button" href="https://playit.gg/setup/download" target="_blank" rel="noreferrer">GET PLAYIT ↗</a><a class="mc-button" href="https://playit.gg/account/tunnels" target="_blank" rel="noreferrer">TUNNELS ↗</a><button type="button" class="mc-button primary" data-close-setup>GOT IT</button></div>
+      <div class="modal-header"><div><p class="eyebrow">CONNECTION SETUP</p><h2 id="setup-title">GET READY BEFORE YOU BUILD</h2></div><button class="close-button" data-close-setup aria-label="Close">×</button></div>
+      <p class="setup-intro">Set up your secure Playit connection first. BlockOps handles local installation; Playit handles your account and public address in the browser.</p>
+      <div class="setup-progress" id="setup-steps" aria-label="Setup progress"><p>Checking this computer…</p></div>
+      <section class="setup-focus" id="setup-focus" aria-live="polite">
+        <span class="setup-focus-icon" id="setup-focus-icon">⌁</span>
+        <div class="setup-focus-copy"><p class="eyebrow" id="setup-focus-label">NEXT STEP</p><h3 id="setup-focus-title">CHECKING PLAYIT</h3><p id="setup-focus-copy">This should only take a moment.</p></div>
+        <div class="setup-focus-actions">
+          <button type="button" class="mc-button primary" id="setup-primary-action">CONTINUE</button>
+          <a class="mc-button primary" id="setup-external-action" target="_blank" rel="noreferrer" hidden>OPEN PLAYIT ↗</a>
+          <button type="button" class="mc-button" id="setup-check-action">CHECK AGAIN</button>
+        </div>
+      </section>
+      <section class="setup-error" id="setup-error" hidden>
+        <span>!</span><div><strong id="setup-error-title">PLAYIT NEEDS ATTENTION</strong><p id="setup-error-copy"></p><ul id="setup-error-tips"></ul><a href="https://playit.gg/download" target="_blank" rel="noreferrer">Open the official Playit download ↗</a></div>
+      </section>
+      <div class="setup-target"><span>LOCAL TARGET</span><strong>127.0.0.1:25565</strong><small>Choose “Minecraft Java” in Playit. Never enter your public Playit address here.</small></div>
+      <div class="setup-privacy"><span>◆</span><p><strong>Your account stays private.</strong> Sign-in and agent approval happen on playit.gg. BlockOps only checks the local credential created after approval.</p></div>
     </section>
   </div>
 

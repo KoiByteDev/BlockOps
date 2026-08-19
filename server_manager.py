@@ -549,6 +549,42 @@ def claim_url_from_output(output: str) -> str | None:
     return matches[-1] if matches else None
 
 
+def playit_credential_ready() -> bool:
+    """Return whether Playit has persisted a non-empty account credential."""
+    try:
+        return PLAYIT_CONFIG.is_file() and PLAYIT_CONFIG.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def setup_playit() -> None:
+    """Install/start Playit before the first world and surface its secure claim URL."""
+    if playit_credential_ready():
+        pid, _ = start_playit()
+        print(f"Playit is connected and ready (PID {pid}).")
+        return
+
+    pid, log_offset = start_playit()
+    print("Waiting for Playit to prepare a secure account claim …")
+    deadline = time.time() + 45
+    while time.time() < deadline and is_alive(pid):
+        if playit_credential_ready():
+            print("Playit account connected successfully.")
+            return
+        claim_url = claim_url_from_output(playit_output_since(log_offset))
+        if claim_url:
+            print(f"Claim this computer's Playit agent: {claim_url}")
+            raise ManagerError(
+                f"Finish the secure Playit account claim at {claim_url}, then return to BlockOps and check the connection."
+            )
+        time.sleep(0.5)
+    if not is_alive(pid):
+        raise ManagerError(f"Playit exited during setup. Review {PLAYIT_LOG}")
+    raise ManagerError(
+        "Playit started but did not provide an account claim. Check the internet connection, then retry setup."
+    )
+
+
 def start_playit() -> tuple[int, int]:
     log_offset = PLAYIT_LOG.stat().st_size if PLAYIT_LOG.exists() else 0
     current = read_pid(PLAYIT_PID)
@@ -1101,6 +1137,8 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("text", nargs="+")
     commands.add_parser("console", help="open a detachable live server console")
     commands.add_parser("status", help="show profiles and process status")
+    setup = commands.add_parser("setup", help="prepare an external service before creating a server")
+    setup.add_argument("noun", choices=["playit"])
     run = commands.add_parser("_run", help=argparse.SUPPRESS)
     run.add_argument("profile_path")
     return result
@@ -1140,6 +1178,8 @@ def main() -> int:
                 send_command(" ".join(args.text))
             elif args.action == "status":
                 show_status()
+            elif args.action == "setup" and args.noun == "playit":
+                setup_playit()
         return 0
     except (ManagerError, OSError) as error:
         print(f"Error: {error}", file=sys.stderr)
