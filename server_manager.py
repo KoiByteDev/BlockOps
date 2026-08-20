@@ -516,9 +516,28 @@ def playit_executable_candidates() -> list[Path]:
     return list(dict.fromkeys(candidate for candidate in path_candidates if candidate))
 
 
+def is_modern_playit_cli(candidate: Path) -> bool:
+    """Identify the 1.x command-line client that cannot use the legacy config-file mode."""
+    if not IS_WINDOWS or candidate.suffix.lower() != ".exe":
+        return False
+    try:
+        help_result = subprocess.run(
+            [candidate, "--help"], text=True, capture_output=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    output = f"{help_result.stdout}\n{help_result.stderr}"
+    return "[COMMAND]" in output and "config-file" not in output
+
+
 def playit_executable() -> Path:
     for candidate in playit_executable_candidates():
         if candidate.is_file() and (IS_WINDOWS or os.access(candidate, os.X_OK)):
+            # A modern CLI must be paired with playitd. If that pair is not
+            # present, keep looking so the compatible portable agent can be
+            # downloaded into BlockOps' managed runtime folder below.
+            if is_modern_playit_cli(candidate):
+                continue
             return candidate.resolve()
 
     if not IS_WINDOWS:
@@ -669,6 +688,12 @@ def start_playit() -> tuple[int, int]:
     PLAYIT_PID.write_text(str(process.pid))
     time.sleep(1)
     if process.poll() is not None:
+        output = playit_output_since(log_offset)
+        if "unexpected argument '--config-file'" in output:
+            raise ManagerError(
+                "A newer Playit CLI was found, but it is not compatible with BlockOps' legacy launcher. "
+                "Open Setup Guide and use the official portable Playit .exe, or install the official Windows MSI so playitd.exe is installed too."
+            )
         raise ManagerError(f"playit.gg exited immediately. Review {PLAYIT_LOG}")
     print(f"playit.gg started (PID {process.pid}).")
     return process.pid, log_offset

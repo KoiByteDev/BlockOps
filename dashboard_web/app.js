@@ -227,6 +227,11 @@ async function openSetupGuide() {
 
 function setupRecovery(error) {
   const message = String(error || "");
+  if (/config-file|newer Playit CLI|legacy launcher/i.test(message)) return {
+    title: "THIS PLAYIT VERSION IS NOT COMPATIBLE",
+    copy: "This computer has the newer Playit command-line client, but BlockOps needs either the matching playitd service or the official portable agent.",
+    tips: ["Use the official portable Windows .exe in the guided fix below.", "If you installed the Playit .msi, confirm playitd.exe is installed beside playit.exe, then click Check again.", "No Minecraft, Java, or firewall setting needs to be changed for this error."],
+  };
   if (/metadata request|download failed|urlopen|timed out|internet/i.test(message)) return {
     title: "PLAYIT COULD NOT DOWNLOAD",
     copy: "BlockOps could not reach the official Playit files. Your worlds and settings were not changed.",
