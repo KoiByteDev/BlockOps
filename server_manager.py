@@ -563,7 +563,9 @@ def supports_playit_commands(candidate: Path) -> bool:
     if not IS_WINDOWS or candidate.suffix.lower() != ".exe":
         return False
     try:
-        result = subprocess.run([candidate, "--help"], text=True, capture_output=True, timeout=5)
+        result = subprocess.run(
+            [candidate, "--help"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=5
+        )
     except (OSError, subprocess.SubprocessError):
         return False
     output = f"{result.stdout}\n{result.stderr}".lower()
@@ -638,7 +640,7 @@ def setup_playit() -> None:
         print(f"Claim this computer's Playit agent: {claim_url}")
         exchanged = subprocess.run(
             [executable, "--secret_path", PLAYIT_CONFIG, "claim", "exchange", code, "--wait", "45"],
-            text=True, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", capture_output=True,
         )
         secret = playit_secret_from_output(f"{exchanged.stdout}\n{exchanged.stderr}")
         if exchanged.returncode or not secret:
@@ -659,7 +661,8 @@ def setup_playit() -> None:
         deadline = time.time() + 15
         while time.time() < deadline and is_alive(pid):
             status = subprocess.run(
-                [cli, "--socket-path", PLAYIT_SOCKET, "status"], text=True, capture_output=True
+                [cli, "--socket-path", PLAYIT_SOCKET, "status"],
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
             )
             if "Phase: waiting for secret" in status.stdout:
                 break
@@ -741,7 +744,8 @@ def ensure_playit_enabled(pid: int, log_offset: int, timeout: int = 30) -> None:
         status = None
         while time.time() < deadline and is_alive(pid):
             status = subprocess.run(
-                [modern_cli, "--socket-path", PLAYIT_SOCKET, "status"], text=True, capture_output=True
+                [modern_cli, "--socket-path", PLAYIT_SOCKET, "status"],
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
             )
             if status.returncode == 0 and any(
                 phase in status.stdout
@@ -759,7 +763,8 @@ def ensure_playit_enabled(pid: int, log_offset: int, timeout: int = 30) -> None:
             if setup.returncode:
                 raise ManagerError("Playit account claim was not completed.")
             status = subprocess.run(
-                [modern_cli, "--socket-path", PLAYIT_SOCKET, "status"], text=True, capture_output=True
+                [modern_cli, "--socket-path", PLAYIT_SOCKET, "status"],
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
             )
         elif "Phase: invalid secret" in status.stdout:
             raise ManagerError("Playit's saved account credential is invalid. Remove playit.toml and start again to reclaim it.")
@@ -1203,7 +1208,10 @@ def show_status() -> None:
     playit_state = "stopped"
     modern_cli = ROOT / "runtimes" / "playit" / ("playit-cli.exe" if IS_WINDOWS else "playit-cli")
     if read_pid(PLAYIT_PID) and modern_cli.is_file():
-        result = subprocess.run([modern_cli, "--socket-path", PLAYIT_SOCKET, "status"], text=True, capture_output=True)
+        result = subprocess.run(
+            [modern_cli, "--socket-path", PLAYIT_SOCKET, "status"],
+            text=True, encoding="utf-8", errors="replace", capture_output=True,
+        )
         playit_state = "authenticated and online" if result.returncode == 0 and "Phase: running" in result.stdout else "not ready"
     elif read_pid(PLAYIT_PID):
         playit_state = "running (legacy agent)"
