@@ -510,34 +510,18 @@ def playit_executable_candidates() -> list[Path]:
         ROOT.parent / "playit-agent" / "target" / "release" / "agent",
         Path.home() / ".local" / "bin" / "playit",
     ]
+    # Prefer the managed portable agent over an unrelated `playit` command on
+    # PATH. A current CLI may be installed globally while the bundled agent
+    # remains the compatible single-process executable BlockOps can launch.
     found = shutil.which("playit") or shutil.which("playit-cli")
     if found:
-        path_candidates.insert(0, Path(found))
+        path_candidates.append(Path(found))
     return list(dict.fromkeys(candidate for candidate in path_candidates if candidate))
-
-
-def is_modern_playit_cli(candidate: Path) -> bool:
-    """Identify the 1.x command-line client that cannot use the legacy config-file mode."""
-    if not IS_WINDOWS or candidate.suffix.lower() != ".exe":
-        return False
-    try:
-        help_result = subprocess.run(
-            [candidate, "--help"], text=True, capture_output=True, timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    output = f"{help_result.stdout}\n{help_result.stderr}"
-    return "[COMMAND]" in output and "config-file" not in output
 
 
 def playit_executable() -> Path:
     for candidate in playit_executable_candidates():
         if candidate.is_file() and (IS_WINDOWS or os.access(candidate, os.X_OK)):
-            # A modern CLI must be paired with playitd. If that pair is not
-            # present, keep looking so the compatible portable agent can be
-            # downloaded into BlockOps' managed runtime folder below.
-            if is_modern_playit_cli(candidate):
-                continue
             return candidate.resolve()
 
     if not IS_WINDOWS:
@@ -567,14 +551,7 @@ def playit_executable() -> Path:
             "Install it from https://playit.gg/download or set PLAYIT_EXECUTABLE=/path/to/playit."
         )
     destination = ROOT / "runtimes" / "playit" / ("playit.exe" if IS_WINDOWS else "playit")
-    # A user may already have placed an incompatible 1.x playit.exe here.
-    # Force replacement so the legacy fallback is actually the file launched.
     download(asset["browser_download_url"], destination, overwrite=True)
-    if is_modern_playit_cli(destination):
-        raise ManagerError(
-            "The downloaded Playit release is newer than the launcher-compatible agent. "
-            "Open Setup Guide and choose the official Windows MSI or a 0.17.1 portable agent."
-        )
     if not IS_WINDOWS:
         destination.chmod(0o755)
     return destination

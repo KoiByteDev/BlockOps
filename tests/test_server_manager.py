@@ -65,6 +65,18 @@ class ServerManagerTests(unittest.TestCase):
                  mock.patch.dict(manager.os.environ, {}, clear=True):
                 self.assertEqual(manager.playit_executable(), executable.resolve())
 
+    def test_managed_portable_agent_wins_over_playit_on_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "runtimes" / "playit" / "playit.exe"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"MZportable")
+            with mock.patch.object(manager, "IS_WINDOWS", True), \
+                 mock.patch.object(manager, "ROOT", root), \
+                 mock.patch.object(manager.shutil, "which", return_value=r"C:\\Program Files\\playit\\playit.exe"), \
+                 mock.patch.dict(manager.os.environ, {}, clear=True):
+                self.assertEqual(manager.playit_executable(), executable.resolve())
+
     def test_windows_playit_finds_modern_official_installation(self):
         with tempfile.TemporaryDirectory() as directory:
             program_files = Path(directory)
