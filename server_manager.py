@@ -606,6 +606,13 @@ def new_playit_claim_code() -> str:
     return secrets.token_hex(5)
 
 
+def playit_secret_from_output(output: str) -> str | None:
+    """Extract Playit's 256-bit secret returned by ``claim exchange``."""
+    clean = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))", "", output)
+    matches = re.findall(r"(?<![A-Fa-f0-9])[A-Fa-f0-9]{64}(?![A-Fa-f0-9])", clean)
+    return matches[-1] if matches else None
+
+
 def playit_credential_ready() -> bool:
     """Return whether Playit has persisted a non-empty account credential."""
     try:
@@ -633,10 +640,13 @@ def setup_playit() -> None:
             [executable, "--secret_path", PLAYIT_CONFIG, "claim", "exchange", code, "--wait", "45"],
             text=True, capture_output=True,
         )
-        if exchanged.returncode or not playit_credential_ready():
+        secret = playit_secret_from_output(f"{exchanged.stdout}\n{exchanged.stderr}")
+        if exchanged.returncode or not secret:
             raise ManagerError(
                 f"Finish the secure Playit account claim at {claim_url}, then retry connecting your account."
             )
+        PLAYIT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        PLAYIT_CONFIG.write_text(f'secret_key = "{secret}"\n', encoding="utf-8")
         pid, _ = start_playit()
         print(f"Playit account connected successfully (PID {pid}).")
         return

@@ -23,6 +23,10 @@ class ServerManagerTests(unittest.TestCase):
             self.assertEqual(manager.new_playit_claim_code(), "4a58dc72a8")
         token_hex.assert_called_once_with(5)
 
+    def test_playit_secret_parser_handles_terminal_output(self):
+        secret = "a" * 64
+        self.assertEqual(manager.playit_secret_from_output(f"\x1b[;m{secret}\x1b[0m"), secret)
+
     def test_playit_setup_surfaces_claim_url_without_creating_a_world(self):
         claim = "https://playit.gg/claim/new456"
         with mock.patch.object(manager, "playit_credential_ready", return_value=False), \
