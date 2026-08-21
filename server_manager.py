@@ -557,6 +557,18 @@ def playit_executable() -> Path:
     return destination
 
 
+def supports_playit_commands(candidate: Path) -> bool:
+    """Return whether a standalone agent exposes the current command interface."""
+    if not IS_WINDOWS or candidate.suffix.lower() != ".exe":
+        return False
+    try:
+        result = subprocess.run([candidate, "--help"], text=True, capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    output = f"{result.stdout}\n{result.stderr}".lower()
+    return "claim" in output and "start" in output and "secret_path" in output
+
+
 def modern_playit_binaries() -> tuple[Path, Path] | None:
     """Find a modern playitd + CLI pair in BlockOps or an official Windows installation."""
     folders = [ROOT / "runtimes" / "playit"]
@@ -588,6 +600,12 @@ def claim_url_from_output(output: str) -> str | None:
     return matches[-1] if matches else None
 
 
+def playit_claim_code(output: str) -> str | None:
+    """Extract the ten-character claim code rendered by the standalone CLI."""
+    matches = re.findall(r"\b[A-Fa-f0-9]{10}\b", output)
+    return matches[-1] if matches else None
+
+
 def playit_credential_ready() -> bool:
     """Return whether Playit has persisted a non-empty account credential."""
     try:
@@ -601,6 +619,29 @@ def setup_playit() -> None:
     if playit_credential_ready():
         pid, _ = start_playit()
         print(f"Playit is connected and ready (PID {pid}).")
+        return
+
+    executable = playit_executable()
+    if supports_playit_commands(executable) and not modern_playit_binaries():
+        generated = subprocess.run(
+            [executable, "--secret_path", PLAYIT_CONFIG, "claim", "generate"],
+            text=True, capture_output=True,
+        )
+        code = playit_claim_code(f"{generated.stdout}\n{generated.stderr}")
+        if generated.returncode or not code:
+            raise ManagerError("Playit did not provide an account claim code. Retry setup.")
+        claim_url = f"https://playit.gg/claim/{code}"
+        print(f"Claim this computer's Playit agent: {claim_url}")
+        exchanged = subprocess.run(
+            [executable, "--secret_path", PLAYIT_CONFIG, "claim", "exchange", code, "--wait", "45"],
+            text=True, capture_output=True,
+        )
+        if exchanged.returncode or not playit_credential_ready():
+            raise ManagerError(
+                f"Finish the secure Playit account claim at {claim_url}, then retry connecting your account."
+            )
+        pid, _ = start_playit()
+        print(f"Playit account connected successfully (PID {pid}).")
         return
 
     pid, log_offset = start_playit()
@@ -665,10 +706,11 @@ def start_playit() -> tuple[int, int]:
         )
     else:
         executable = playit_executable()
-        process = subprocess.Popen(
-            [executable, "--config-file", PLAYIT_CONFIG, "--stdout-logs"],
-            cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **detached_process_options(),
-        )
+        if supports_playit_commands(executable):
+            command = [executable, "--secret_path", PLAYIT_CONFIG, "--stdout", "start"]
+        else:
+            command = [executable, "--config-file", PLAYIT_CONFIG, "--stdout-logs"]
+        process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **detached_process_options())
     PLAYIT_PID.write_text(str(process.pid))
     time.sleep(1)
     if process.poll() is not None:

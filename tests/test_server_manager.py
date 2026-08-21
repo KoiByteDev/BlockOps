@@ -18,6 +18,9 @@ class ServerManagerTests(unittest.TestCase):
     def test_claim_url_absent_for_enabled_agent(self):
         self.assertIsNone(manager.claim_url_from_output("agent registered; tunnel running"))
 
+    def test_playit_claim_code_uses_rendered_standalone_code(self):
+        self.assertEqual(manager.playit_claim_code("claim code: 4a58dc72a8"), "4a58dc72a8")
+
     def test_playit_setup_surfaces_claim_url_without_creating_a_world(self):
         claim = "https://playit.gg/claim/new456"
         with mock.patch.object(manager, "playit_credential_ready", return_value=False), \
