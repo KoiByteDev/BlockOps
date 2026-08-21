@@ -20,6 +20,7 @@ class ServerManagerTests(unittest.TestCase):
 
     def test_playit_claim_code_uses_rendered_standalone_code(self):
         self.assertEqual(manager.playit_claim_code("claim code: 4a58dc72a8"), "4a58dc72a8")
+        self.assertEqual(manager.playit_claim_code("\x1b[;m81fc48561c\x1b[0m"), "81fc48561c")
 
     def test_playit_setup_surfaces_claim_url_without_creating_a_world(self):
         claim = "https://playit.gg/claim/new456"
