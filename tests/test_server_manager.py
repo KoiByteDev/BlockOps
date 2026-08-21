@@ -18,10 +18,10 @@ class ServerManagerTests(unittest.TestCase):
     def test_claim_url_absent_for_enabled_agent(self):
         self.assertIsNone(manager.claim_url_from_output("agent registered; tunnel running"))
 
-    def test_playit_claim_code_uses_rendered_standalone_code(self):
-        self.assertEqual(manager.playit_claim_code("claim code: 4a58dc72a8"), "4a58dc72a8")
-        self.assertEqual(manager.playit_claim_code("\x1b[;m81fc48561c\x1b[0m"), "81fc48561c")
-        self.assertEqual(manager.playit_claim_code("\x1b[11;56H\x1b[;m81fc48561c\x1b[11;120H"), "81fc48561c")
+    def test_standalone_claim_code_matches_playit_format(self):
+        with mock.patch.object(manager.secrets, "token_hex", return_value="4a58dc72a8") as token_hex:
+            self.assertEqual(manager.new_playit_claim_code(), "4a58dc72a8")
+        token_hex.assert_called_once_with(5)
 
     def test_playit_setup_surfaces_claim_url_without_creating_a_world(self):
         claim = "https://playit.gg/claim/new456"

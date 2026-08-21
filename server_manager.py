@@ -10,6 +10,7 @@ import json
 import os
 import platform
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -600,14 +601,9 @@ def claim_url_from_output(output: str) -> str | None:
     return matches[-1] if matches else None
 
 
-def playit_claim_code(output: str) -> str | None:
-    """Extract the ten-character claim code rendered by the standalone CLI."""
-    # The CLI renders the code inside ANSI cursor/style sequences, and some
-    # terminals interleave those sequences while drawing the screen. Strip
-    # them first so parsing does not depend on the terminal implementation.
-    clean = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))", "", output)
-    matches = re.findall(r"[A-Fa-f0-9]{10}", clean)
-    return matches[-1] if matches else None
+def new_playit_claim_code() -> str:
+    """Generate the same five-byte hexadecimal claim code as Playit CLI."""
+    return secrets.token_hex(5)
 
 
 def playit_credential_ready() -> bool:
@@ -627,13 +623,10 @@ def setup_playit() -> None:
 
     executable = playit_executable()
     if supports_playit_commands(executable) and not modern_playit_binaries():
-        generated = subprocess.run(
-            [executable, "--secret_path", PLAYIT_CONFIG, "claim", "generate"],
-            text=True, capture_output=True,
-        )
-        code = playit_claim_code(f"{generated.stdout}\n{generated.stderr}")
-        if generated.returncode or not code:
-            raise ManagerError("Playit did not provide an account claim code. Retry setup.")
+        # Playit's official claim generator is five random bytes encoded as
+        # ten hexadecimal characters. Generate it here instead of scraping
+        # the CLI's terminal UI, which is not stable when stdout is captured.
+        code = new_playit_claim_code()
         claim_url = f"https://playit.gg/claim/{code}"
         print(f"Claim this computer's Playit agent: {claim_url}")
         exchanged = subprocess.run(
