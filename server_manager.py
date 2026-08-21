@@ -602,10 +602,11 @@ def claim_url_from_output(output: str) -> str | None:
 
 def playit_claim_code(output: str) -> str | None:
     """Extract the ten-character claim code rendered by the standalone CLI."""
-    # The CLI renders the code inside ANSI cursor/style sequences, so the
-    # character immediately before it can be the word character ``m`` from
-    # ``ESC[;m``. Word-boundary matching would therefore miss valid codes.
-    matches = re.findall(r"[A-Fa-f0-9]{10}", output)
+    # The CLI renders the code inside ANSI cursor/style sequences, and some
+    # terminals interleave those sequences while drawing the screen. Strip
+    # them first so parsing does not depend on the terminal implementation.
+    clean = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))", "", output)
+    matches = re.findall(r"[A-Fa-f0-9]{10}", clean)
     return matches[-1] if matches else None
 
 
