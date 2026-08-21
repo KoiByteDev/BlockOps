@@ -189,9 +189,9 @@ def slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
-def download(url: str, destination: Path) -> None:
+def download(url: str, destination: Path, *, overwrite: bool = False) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists() and destination.stat().st_size:
+    if not overwrite and destination.exists() and destination.stat().st_size:
         return
     print(f"Downloading {destination.name} …")
     temporary = destination.with_suffix(destination.suffix + ".part")
@@ -567,7 +567,14 @@ def playit_executable() -> Path:
             "Install it from https://playit.gg/download or set PLAYIT_EXECUTABLE=/path/to/playit."
         )
     destination = ROOT / "runtimes" / "playit" / ("playit.exe" if IS_WINDOWS else "playit")
-    download(asset["browser_download_url"], destination)
+    # A user may already have placed an incompatible 1.x playit.exe here.
+    # Force replacement so the legacy fallback is actually the file launched.
+    download(asset["browser_download_url"], destination, overwrite=True)
+    if is_modern_playit_cli(destination):
+        raise ManagerError(
+            "The downloaded Playit release is newer than the launcher-compatible agent. "
+            "Open Setup Guide and choose the official Windows MSI or a 0.17.1 portable agent."
+        )
     if not IS_WINDOWS:
         destination.chmod(0o755)
     return destination
