@@ -1,6 +1,6 @@
 # BlockOps
 
-BlockOps is a local Minecraft Java server manager for Windows and macOS. Its browser dashboard creates Vanilla, Fabric, and Forge servers; installs the correct Java runtime; safely starts and stops worlds; manages mods and configuration; shows players and logs; makes scheduled backups; and connects the active server through playit.gg.
+BlockOps is a local game-server manager for Windows and macOS. Its browser dashboard creates Minecraft Java (Vanilla, Fabric, and Forge) servers and, on Windows, Palworld Dedicated Servers; safely starts and stops worlds; manages configuration; shows logs; makes scheduled backups; and connects the active server through playit.gg.
 
 The dashboard is private to the computer (`127.0.0.1:8765`) and protected by a random local launch token. Worlds and account credentials are excluded from Git.
 
@@ -35,8 +35,8 @@ Before creating the first server, BlockOps opens a guided connection setup:
 
 1. On Windows, choose **Install Playit**. BlockOps downloads the signed official portable agent. On macOS, use the official Playit download link, install the app, and return to BlockOps.
 2. Choose **Connect Account**, open the one-time **Claim Playit Agent** link, and approve this computer on playit.gg. Account credentials are entered only on Playit's site.
-3. Open **Playit Tunnels**, create a **Minecraft Java** tunnel targeting `127.0.0.1:25565`, and confirm that step in BlockOps.
-4. Choose **Create My First Server**, enter a Minecraft version, select Vanilla/Fabric/Forge, and choose RAM limits. BlockOps validates the version and downloads Minecraft plus the correct Java runtime. Forge requires an exact Forge version; Fabric can select the latest stable loader automatically.
+3. Open **Playit Tunnels**, create a **Minecraft Java** tunnel targeting `127.0.0.1:25565` for Minecraft or a **UDP** tunnel targeting `127.0.0.1:8211` for Palworld, and confirm that step in BlockOps.
+4. Choose **Create My First Server**, select the game, and choose RAM limits. Minecraft validates the version and downloads the correct Java runtime. Palworld downloads its official Dedicated Server package through SteamCMD on Windows. Forge requires an exact Forge version; Fabric can select the latest stable loader automatically.
 
 The **Setup Guide** reports installation, account, and tunnel status separately and provides recovery guidance when a download, firewall, antivirus, permission, or agent-start problem occurs. Existing installations with servers are never blocked by this newly introduced first-run gate.
 
@@ -48,6 +48,7 @@ The graphical dashboard is recommended, but direct commands are available:
 | --- | --- | --- |
 | Open manager | `./server-manager` | `server-manager.bat` |
 | Create server | `./server-manager create instance --name Survival --minecraft 1.21.8 --loader fabric` | `server-manager.bat create instance --name Survival --minecraft 1.21.8 --loader fabric` |
+| Create Palworld server (Windows) | `./server-manager create instance --game palworld --name Pals` | `server-manager.bat create instance --game palworld --name Pals` |
 | Start | `./server-manager start instance --profile survival` | `server-manager.bat start instance --profile survival` |
 | Console | `./server-manager console` | `server-manager.bat console` |
 | Stop safely | `./server-manager stop instance` | `server-manager.bat stop instance` |

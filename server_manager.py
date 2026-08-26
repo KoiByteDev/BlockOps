@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-platform Minecraft profile and playit.gg manager."""
+"""Cross-platform game-server profile and playit.gg manager."""
 
 from __future__ import annotations
 
@@ -48,6 +48,10 @@ PLAYIT_PORTABLE_URL = (
     "v0.17.1/playit-windows-x86_64-signed.exe"
 )
 DEFAULT_PORT = 25565
+PALWORLD_PORT = 8211
+PALWORLD_QUERY_PORT = 27016
+PALWORLD_APP_ID = "2394010"
+STEAMCMD_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
 IS_WINDOWS = os.name == "nt"
 # Legacy fallbacks are intentionally unchanged so profiles created before
 # backupSettings was persisted keep their existing effective behavior.
@@ -179,7 +183,8 @@ def profile_by_id(profile_id: str | None, *, prompt: bool = False) -> dict:
         names = ", ".join(p["id"] for p in profiles)
         raise ManagerError(f"Choose a profile with --profile. Available: {names}")
     for number, item in enumerate(profiles, 1):
-        print(f"[{number}] {item['name']} ({item['minecraftVersion']} {item['loader']})")
+        label = "Palworld" if profile_game(item) == "palworld" else f"{item['minecraftVersion']} {item['loader']}"
+        print(f"[{number}] {item['name']} ({label})")
     try:
         return profiles[int(input("Profile: ").strip()) - 1]
     except (ValueError, IndexError):
@@ -188,6 +193,14 @@ def profile_by_id(profile_id: str | None, *, prompt: bool = False) -> dict:
 
 def slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def profile_game(profile: dict) -> str:
+    """Return the supported game type, keeping profiles made before game types Minecraft."""
+    game = str(profile.get("game", "minecraft")).lower()
+    if game not in {"minecraft", "palworld"}:
+        raise ManagerError(f"Unsupported game type in profile: {game}")
+    return game
 
 
 def download(url: str, destination: Path, *, overwrite: bool = False) -> None:
@@ -413,7 +426,105 @@ def install_forge(folder: Path, version: str, loader_version: str, java: Path) -
     raise ManagerError("Forge installed, but its launcher was not found.")
 
 
+def steamcmd_executable() -> Path:
+    """Install SteamCMD privately and return its verified Windows executable."""
+    if not IS_WINDOWS:
+        raise ManagerError("Palworld dedicated servers are currently supported by BlockOps on Windows only.")
+    folder = ROOT / "runtimes" / "steamcmd"
+    executable = folder / "steamcmd.exe"
+    if executable.is_file():
+        return executable
+    archive = folder / "steamcmd.zip"
+    download(STEAMCMD_URL, archive)
+    with zipfile.ZipFile(archive) as package:
+        for member in package.infolist():
+            if not (folder / member.filename).resolve().is_relative_to(folder.resolve()):
+                raise ManagerError("The SteamCMD archive contains an unsafe path.")
+        package.extractall(folder)
+    if not executable.is_file():
+        raise ManagerError("SteamCMD did not provide steamcmd.exe. Retry creating the Palworld server.")
+    return executable
+
+
+def install_palworld(folder: Path) -> Path:
+    """Install Palworld's anonymous SteamCMD dedicated-server package."""
+    executable = steamcmd_executable()
+    server = folder / "PalServer.exe"
+    def run_steamcmd(arguments: list[str]) -> subprocess.CompletedProcess:
+        result = subprocess.run(
+            [executable, *arguments], cwd=executable.parent,
+            text=True, encoding="utf-8", errors="replace", capture_output=True,
+        )
+        output = f"{result.stdout}\n{result.stderr}".strip()
+        if output:
+            print(output)
+        return result
+
+    # A newly downloaded SteamCMD updates and restarts itself before its app
+    # configuration is ready. Logging in once first avoids a transient
+    # "Missing configuration" response for the initial app_update request.
+    run_steamcmd(["+login", "anonymous", "+quit"])
+    command = ["+force_install_dir", str(folder), "+login", "anonymous", "+app_update", PALWORLD_APP_ID, "validate", "+quit"]
+    result = run_steamcmd(command)
+    output = f"{result.stdout}\n{result.stderr}"
+    if "Missing configuration" in output and not server.is_file():
+        print("SteamCMD is finishing its initial configuration; retrying Palworld download …")
+        time.sleep(3)
+        result = run_steamcmd(command)
+        output = f"{result.stdout}\n{result.stderr}"
+    if result.returncode or not server.is_file():
+        detail = "SteamCMD did not produce PalServer.exe."
+        if "Missing configuration" in output:
+            detail = "SteamCMD is still initializing its account configuration; try again in a minute."
+        raise ManagerError(f"{detail} See the creation log above for SteamCMD details.")
+    return server
+
+
+def make_palworld_profile(args) -> dict:
+    name = args.name or input("Profile name: ").strip()
+    profile_id = args.id or slug(name)
+    if not profile_id:
+        raise ManagerError("The profile name must contain letters or digits.")
+    if not re.fullmatch(r"[1-9][0-9]*[MG]", args.min_ram, re.IGNORECASE) or not re.fullmatch(r"[1-9][0-9]*[MG]", args.max_ram, re.IGNORECASE):
+        raise ManagerError("RAM values must look like 2G or 4096M.")
+    data = registry()
+    if any(item["id"] == profile_id for item in data["profiles"]):
+        raise ManagerError(f"A profile named {profile_id} already exists.")
+    folder = Path(args.path).expanduser().resolve() if args.path else PROFILES / profile_id
+    if folder.exists() and any(folder.iterdir()):
+        raise ManagerError(f"Profile folder is not empty: {folder}")
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        install_palworld(folder)
+        default_settings = folder / "DefaultPalWorldSettings.ini"
+        settings_path = folder / "Pal" / "Saved" / "Config" / "WindowsServer" / "PalWorldSettings.ini"
+        if not default_settings.is_file():
+            raise ManagerError("Palworld installed but did not include its default server settings file.")
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(default_settings, settings_path)
+        profile = {
+            "id": profile_id, "name": name, "game": "palworld",
+            "path": str(folder.relative_to(ROOT) if folder.is_relative_to(ROOT) else folder),
+            "minimumRam": args.min_ram, "maximumRam": args.max_ram,
+            "launchExecutable": "PalServer.exe", "port": PALWORLD_PORT, "queryPort": PALWORLD_QUERY_PORT,
+            "backupSettings": new_profile_backup_settings(),
+        }
+        save_json(folder / "profile.json", profile)
+        data["schemaVersion"] = 3
+        data["profiles"].append(profile)
+        save_json(REGISTRY, data)
+        print(f"Created {name}: Palworld Dedicated Server")
+        print(f"Files: {folder}")
+        return profile
+    except Exception:
+        if folder.is_relative_to(PROFILES):
+            shutil.rmtree(folder, ignore_errors=True)
+        raise
+
+
 def make_profile(args) -> dict:
+    if getattr(args, "game", "minecraft") == "palworld":
+        return make_palworld_profile(args)
     name = args.name or input("Profile name: ").strip()
     version = args.minecraft or input("Minecraft version: ").strip()
     loader = (args.loader or input("Loader (vanilla/fabric/forge): ").strip()).lower()
@@ -451,6 +562,7 @@ def make_profile(args) -> dict:
         (folder / "server.properties").write_text("\n".join(properties) + "\n", encoding="utf-8")
         profile = {
             "id": profile_id, "name": name, "path": str(folder.relative_to(ROOT) if folder.is_relative_to(ROOT) else folder),
+            "game": "minecraft",
             "minecraftVersion": version, "loader": loader, "loaderVersion": loader_version or "",
             "javaMajor": major, "javaPath": str(java), "minimumRam": args.min_ram, "maximumRam": args.max_ram,
             "launchJar": launch, "jvmArguments": [], "serverArguments": ["nogui"], "port": DEFAULT_PORT,
@@ -488,6 +600,36 @@ def read_pid(path: Path) -> int | None:
 def port_open(port: int) -> bool:
     with socket.socket() as sock:
         return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def game_port_in_use(profile: dict) -> bool:
+    """Check whether the ports needed by a profile are bound."""
+    port = int(profile.get("port", DEFAULT_PORT))
+    if profile_game(profile) == "minecraft":
+        return port_open(port)
+    query_port = int(profile.get("queryPort", PALWORLD_QUERY_PORT))
+
+    def udp_port_bound(candidate: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", candidate))
+                return False
+            except OSError:
+                return True
+
+    return udp_port_bound(port) or udp_port_bound(query_port)
+
+
+def palworld_ports_bound(profile: dict) -> bool:
+    """Return true only after Palworld has bound both its game and query ports."""
+    for port in (int(profile.get("port", PALWORLD_PORT)), int(profile.get("queryPort", PALWORLD_QUERY_PORT))):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", port))
+                return False
+            except OSError:
+                continue
+    return True
 
 
 def playit_executable_candidates() -> list[Path]:
@@ -735,8 +877,10 @@ def start_playit() -> tuple[int, int]:
     return process.pid, log_offset
 
 
-def ensure_playit_enabled(pid: int, log_offset: int, timeout: int = 30) -> None:
-    """Require account claim/tunnel setup before Minecraft is launched."""
+def ensure_playit_enabled(pid: int, log_offset: int, timeout: int = 30, profile: dict | None = None) -> None:
+    """Require account claim/tunnel setup before a managed game is launched."""
+    game = profile_game(profile or {})
+    tunnel_help = "Minecraft Java tunnel targeting 127.0.0.1:25565" if game == "minecraft" else "UDP tunnel targeting 127.0.0.1:8211 for Palworld"
     modern = modern_playit_binaries()
     if modern:
         _, modern_cli = modern
@@ -757,7 +901,7 @@ def ensure_playit_enabled(pid: int, log_offset: int, timeout: int = 30) -> None:
             raise ManagerError(f"playit.gg daemon did not become ready. Review {PLAYIT_LOG}")
         if "Phase: waiting for secret" in status.stdout:
             if not sys.stdin.isatty():
-                raise ManagerError("playit.gg must be claimed interactively before starting Minecraft.")
+                raise ManagerError("playit.gg must be claimed interactively before starting a server.")
             print("\nplayit.gg is not enabled yet. Starting its secure account-claim setup …")
             setup = subprocess.run([modern_cli, "--socket-path", PLAYIT_SOCKET, "setup"])
             if setup.returncode:
@@ -769,9 +913,9 @@ def ensure_playit_enabled(pid: int, log_offset: int, timeout: int = 30) -> None:
         elif "Phase: invalid secret" in status.stdout:
             raise ManagerError("Playit's saved account credential is invalid. Remove playit.toml and start again to reclaim it.")
         if status.returncode or "Phase: running" not in status.stdout:
-            raise ManagerError("Playit is not authenticated and running; Minecraft was not started.")
+            raise ManagerError("Playit is not authenticated and running; the server was not started.")
         print("playit.gg agent is authenticated and online.")
-        print("Ensure your Playit dashboard has a Minecraft Java tunnel targeting 127.0.0.1:25565.")
+        print(f"Ensure your Playit dashboard has a {tunnel_help}.")
         return
 
     # Compatibility path for an already installed legacy standalone agent.
@@ -792,13 +936,13 @@ def ensure_playit_enabled(pid: int, log_offset: int, timeout: int = 30) -> None:
     if not sys.stdin.isatty():
         raise ManagerError(
             "playit.gg must be enabled before this server can start. "
-            f"Claim it at {claim_url}, create a Minecraft Java tunnel to 127.0.0.1:25565, then retry."
+            f"Claim it at {claim_url}, create a {tunnel_help}, then retry."
         )
     print("\nplayit.gg is not enabled yet.")
     print(f"Claim this computer's agent: {claim_url}")
     input(
         "Copy the URL above into a working browser. In Playit, claim the agent "
-        "and enable a Minecraft Java tunnel to 127.0.0.1:25565. "
+        f"and enable a {tunnel_help}. "
         "Then press Enter here: "
     )
     # The agent exchanges the approved claim in the background. Do not launch
@@ -845,6 +989,11 @@ def stop_process(pid_path: Path, timeout: int = 15) -> None:
 
 def launch_command(profile: dict) -> list[str]:
     folder = absolute_profile_path(profile)
+    if profile_game(profile) == "palworld":
+        executable = folder / profile.get("launchExecutable", "PalServer.exe")
+        if not executable.is_file():
+            raise ManagerError(f"Palworld server executable is missing: {executable}")
+        return [str(executable), f"-port={int(profile.get('port', PALWORLD_PORT))}", f"-queryport={int(profile.get('queryPort', PALWORLD_QUERY_PORT))}", "-players=32", "-useperfthreads", "-NoAsyncLoadingThread", "-UseMultithreadForDS"]
     java = Path(profile.get("javaPath", ""))
     required = int(profile.get("javaMajor") or required_java(profile["minecraftVersion"]))
     if not java.exists() or java_major(java) != required:
@@ -864,6 +1013,12 @@ def launch_command(profile: dict) -> list[str]:
 
 def world_path(folder: Path) -> Path:
     """Return the configured world directory without trusting paths outside the profile."""
+    with contextlib.suppress(OSError, ValueError):
+        profile = load_json(folder / "profile.json")
+        if profile_game(profile) == "palworld":
+            world = (folder / "Pal" / "Saved" / "SaveGames").resolve()
+            if world.is_relative_to(folder.resolve()):
+                return world
     level_name = "world"
     properties = folder / "server.properties"
     if properties.exists():
@@ -879,7 +1034,7 @@ def world_path(folder: Path) -> Path:
 
 def write_server_command(process: subprocess.Popen, command: str) -> None:
     if not process.stdin:
-        raise ManagerError("Minecraft's command input is unavailable.")
+        raise ManagerError("This server does not accept console commands through BlockOps.")
     process.stdin.write((command.strip().lstrip("/") + "\n").encode())
     process.stdin.flush()
 
@@ -946,6 +1101,7 @@ def runner_mode(profile_path: str) -> None:
     (control / "stop.request").unlink(missing_ok=True)
     log_path = folder / "profile-runner.log"
     settings = backup_settings(profile)
+    game = profile_game(profile)
     while True:
         with log_path.open("a", encoding="utf-8") as runner_log:
             runner_log.write(f"{time.strftime('%F %T')} starting {profile['name']}\n")
@@ -959,14 +1115,15 @@ def runner_mode(profile_path: str) -> None:
                 if command_file.exists():
                     commands = command_file.read_text(encoding="utf-8").splitlines()
                     command_file.unlink(missing_ok=True)
-                    for command in commands:
-                        if command.strip():
-                            write_server_command(process, command)
+                    if game == "minecraft":
+                        for command in commands:
+                            if command.strip():
+                                write_server_command(process, command)
                 backup_request = control / "backup.request"
                 if backup_request.exists():
                     backup_request.unlink(missing_ok=True)
                     try:
-                        backup = create_world_backup(folder, process, settings)
+                        backup = create_world_backup(folder, process, settings) if game == "minecraft" else None
                         if backup:
                             runner_log.write(f"{time.strftime('%F %T')} manual backup created: {backup.name}\n")
                             runner_log.flush()
@@ -976,7 +1133,7 @@ def runner_mode(profile_path: str) -> None:
                 if (control / "stop.request").exists():
                     (control / "stop.request").unlink(missing_ok=True)
                     requested_stop = True
-                    if process.stdin:
+                    if game == "minecraft" and process.stdin:
                         if settings["backupOnStop"]:
                             try:
                                 backup = create_world_backup(folder, process, settings)
@@ -988,12 +1145,14 @@ def runner_mode(profile_path: str) -> None:
                                 runner_log.flush()
                         write_server_command(process, "save-all flush")
                         write_server_command(process, "stop")
+                    else:
+                        process.terminate()
                     try:
                         process.wait(timeout=120)
                     except subprocess.TimeoutExpired:
                         process.terminate()
                     break
-                if next_backup is not None and time.monotonic() >= next_backup:
+                if game == "minecraft" and next_backup is not None and time.monotonic() >= next_backup:
                     if settings.get("onlyWhenEmpty"):
                         players = live_player_count(folder, process)
                         if players is None:
@@ -1019,13 +1178,14 @@ def runner_mode(profile_path: str) -> None:
             SERVER_PID.unlink(missing_ok=True)
             if requested_stop:
                 return
-            runner_log.write(f"{time.strftime('%F %T')} server exited; restarting in 10 seconds\n")
-        time.sleep(10)
+            runner_log.write(f"{time.strftime('%F %T')} server exited; leaving it stopped\n")
+            runner_log.flush()
+            return
 
 
 def start_profile(profile: dict, timeout: int) -> None:
     port = int(profile.get("port", DEFAULT_PORT))
-    if port_open(port):
+    if game_port_in_use(profile):
         raise ManagerError(f"Port {port} is already in use. Stop the active server first.")
     folder = absolute_profile_path(profile)
     if not folder.exists():
@@ -1033,33 +1193,53 @@ def start_profile(profile: dict, timeout: int) -> None:
     STATE.mkdir(parents=True, exist_ok=True)
     try:
         playit_pid, playit_log_offset = start_playit()
-        ensure_playit_enabled(playit_pid, playit_log_offset)
+        ensure_playit_enabled(playit_pid, playit_log_offset, profile=profile)
     except Exception:
         stop_process(PLAYIT_PID)
         raise
-    # Only launch Minecraft after Playit has been claimed and enabled. This
+    # Only launch the server after Playit has been claimed and enabled. This
     # prevents Start instance from silently creating a localhost-only server.
     runner_log = (folder / "profile-runner.log").open("ab", buffering=0)
     process = subprocess.Popen([sys.executable, __file__, "_run", str(folder)], cwd=folder, stdin=subprocess.DEVNULL, stdout=runner_log, stderr=subprocess.STDOUT, **detached_process_options())
     (STATE / "runner.pid").write_text(str(process.pid))
     latest = folder / "logs" / "latest.log"
     deadline = time.time() + timeout
+    palworld_ready_after = time.time() + min(10, timeout)
     print(f"Starting {profile['name']} …")
-    while time.time() < deadline:
-        if process.poll() is not None:
-            raise ManagerError(f"Server runner exited. Review {folder / 'profile-runner.log'}")
-        if port_open(port):
-            print(f"{profile['name']} is online through the configured playit.gg public address.")
-            return
-        if latest.exists():
-            try:
-                tail = latest.read_text(encoding="utf-8", errors="replace").splitlines()[-1:]
-                if tail:
-                    print(f"  {tail[0][-160:]}", end="\r", flush=True)
-            except OSError:
-                pass
-        time.sleep(1)
-    raise ManagerError(f"Server did not open port {port} within {timeout} seconds. Review {latest}")
+    try:
+        while time.time() < deadline:
+            if process.poll() is not None:
+                raise ManagerError(f"Server runner exited. Review {folder / 'profile-runner.log'}")
+            if profile_game(profile) == "minecraft" and port_open(port):
+                print(f"{profile['name']} is online through the configured playit.gg public address.")
+                return
+            if profile_game(profile) == "palworld" and time.time() >= palworld_ready_after and palworld_ports_bound(profile):
+                print(f"{profile['name']} is running through the configured playit.gg public address.")
+                return
+            if latest.exists():
+                try:
+                    tail = latest.read_text(encoding="utf-8", errors="replace").splitlines()[-1:]
+                    if tail:
+                        print(f"  {tail[0][-160:]}", end="\r", flush=True)
+                except OSError:
+                    pass
+            time.sleep(1)
+        raise ManagerError(f"Server did not open port {port} within {timeout} seconds. Review {latest}")
+    except Exception:
+        # Never leave a detached runner alive when startup fails. An orphaned
+        # runner would let a later Start action launch a second game process.
+        if process.poll() is None:
+            if IS_WINDOWS:
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
+            else:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGTERM)
+        with contextlib.suppress(OSError):
+            if (STATE / "runner.pid").read_text(encoding="utf-8", errors="ignore").strip() == str(process.pid):
+                (STATE / "runner.pid").unlink(missing_ok=True)
+        SERVER_PID.unlink(missing_ok=True)
+        stop_process(PLAYIT_PID)
+        raise
 
 
 def active_profile() -> dict | None:
@@ -1084,9 +1264,9 @@ def stop_profile() -> None:
         # terminal reaps it) after Minecraft has saved and exited. The port is
         # the authoritative server state; do not make the UI hang on a stale
         # wrapper PID after the server is safely offline.
-        while port_open(port) and time.time() < deadline:
+        while game_port_in_use(profile) and time.time() < deadline:
             time.sleep(1)
-        if port_open(port):
+        if game_port_in_use(profile):
             raise ManagerError("The server did not stop cleanly within 125 seconds.")
         stop_process(STATE / "runner.pid", timeout=3)
         SERVER_PID.unlink(missing_ok=True)
@@ -1098,7 +1278,9 @@ def stop_profile() -> None:
 def send_command(command: str) -> None:
     profile = active_profile()
     if not profile:
-        raise ManagerError("No managed Minecraft server is running.")
+        raise ManagerError("No managed server is running.")
+    if profile_game(profile) != "minecraft":
+        raise ManagerError("Palworld console commands are not supported by BlockOps yet. Use its configuration files instead.")
     request = absolute_profile_path(profile) / ".control" / "command.request"
     if request.exists():
         raise ManagerError("The previous server command is still pending.")
@@ -1202,9 +1384,12 @@ def show_status() -> None:
     if not data:
         print("No profiles exist.")
     for profile in data:
-        print(f"{profile['id']}: {profile['minecraftVersion']} {profile['loader']} {profile.get('loaderVersion', '')} ({profile['minimumRam']}–{profile['maximumRam']})")
+        if profile_game(profile) == "palworld":
+            print(f"{profile['id']}: Palworld ({profile['minimumRam']}–{profile['maximumRam']})")
+        else:
+            print(f"{profile['id']}: {profile['minecraftVersion']} {profile['loader']} {profile.get('loaderVersion', '')} ({profile['minimumRam']}–{profile['maximumRam']})")
     active = active_profile()
-    print(f"Minecraft: {'running — ' + active['name'] if active else 'stopped'}")
+    print(f"Server: {'running — ' + active['name'] if active else 'stopped'}")
     playit_state = "stopped"
     modern_cli = ROOT / "runtimes" / "playit" / ("playit-cli.exe" if IS_WINDOWS else "playit-cli")
     if read_pid(PLAYIT_PID) and modern_cli.is_file():
@@ -1231,10 +1416,10 @@ def interactive() -> None:
             elif choice == "2": stop_profile()
             elif choice == "3":
                 profile = active_profile()
-                if not profile: raise ManagerError("No managed Minecraft server is running.")
+                if not profile: raise ManagerError("No managed server is running.")
                 console_ui(profile)
             elif choice == "4": send_command(input("Server command: "))
-            elif choice == "5": make_profile(argparse.Namespace(name=None, minecraft=None, loader=None, loader_version=None, id=None, path=None, min_ram="2G", max_ram="6G"))
+            elif choice == "5": make_profile(argparse.Namespace(game="minecraft", name=None, minecraft=None, loader=None, loader_version=None, id=None, path=None, min_ram="2G", max_ram="6G"))
             elif choice == "6": show_status()
             elif choice == "7": return
             else: print("Invalid choice.")
@@ -1243,7 +1428,7 @@ def interactive() -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description="Cross-platform Minecraft and playit.gg server manager")
+    result = argparse.ArgumentParser(description="Cross-platform game-server and playit.gg manager")
     commands = result.add_subparsers(dest="action")
     start = commands.add_parser("start", help="start an instance and playit.gg")
     start.add_argument("noun", nargs="?", choices=["instance"])
@@ -1254,6 +1439,7 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("noun", nargs="?", choices=["instance"])
     create.add_argument("--name")
     create.add_argument("--id")
+    create.add_argument("--game", choices=["minecraft", "palworld"], default="minecraft")
     create.add_argument("--minecraft", "--minecraft-version")
     create.add_argument("--loader", choices=["vanilla", "fabric", "forge"])
     create.add_argument("--loader-version")
@@ -1283,7 +1469,7 @@ def main() -> int:
         if args.action == "console":
             profile = active_profile()
             if not profile:
-                raise ManagerError("No managed Minecraft server is running.")
+                raise ManagerError("No managed server is running.")
             console_ui(profile)
             return 0
         with manager_lock():

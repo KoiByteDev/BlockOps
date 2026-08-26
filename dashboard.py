@@ -478,8 +478,8 @@ def setup_status() -> dict:
             {"id": "runtime", "title": "BlockOps ready", "done": sys.version_info >= (3, 10), "help": "Run setup.command on macOS or setup.bat on Windows."},
             {"id": "agent", "title": "Install Playit", "done": playit_installed, "help": "BlockOps installs the official portable agent on Windows. macOS requires the official Playit download."},
             {"id": "account", "title": "Connect your account", "done": account_ready, "help": "Claim this computer's agent in your browser. BlockOps never sees your Playit password."},
-            {"id": "tunnel", "title": "Create the Minecraft tunnel", "done": tunnel_confirmed, "help": "Create a Minecraft Java tunnel targeting 127.0.0.1:25565, then confirm it here."},
-            {"id": "world", "title": "Create your first server", "done": bool(profiles), "help": "BlockOps will install Minecraft and the correct Java runtime."},
+            {"id": "tunnel", "title": "Create a game tunnel", "done": tunnel_confirmed, "help": "Use Minecraft Java → 127.0.0.1:25565 or UDP → 127.0.0.1:8211 for Palworld, then confirm it here."},
+            {"id": "world", "title": "Create your first server", "done": bool(profiles), "help": "BlockOps installs Minecraft or Palworld and its required runtime."},
         ],
     }
 
@@ -738,6 +738,7 @@ def player_status(profile: dict, *, force: bool = False) -> dict:
 
 def profile_summary(profile: dict, active_id: str | None) -> dict:
     folder = manager.absolute_profile_path(profile)
+    game = manager.profile_game(profile)
     properties = parse_properties(folder / "server.properties")
     mods = list((folder / "mods").rglob("*.jar")) if (folder / "mods").is_dir() else []
     disabled = list((folder / "mods").rglob("*.jar.disabled")) if (folder / "mods").is_dir() else []
@@ -746,14 +747,15 @@ def profile_summary(profile: dict, active_id: str | None) -> dict:
     return {
         "id": profile["id"],
         "name": profile["name"],
-        "minecraftVersion": profile["minecraftVersion"],
-        "loader": profile["loader"],
+        "game": game,
+        "minecraftVersion": profile.get("minecraftVersion", ""),
+        "loader": profile.get("loader", ""),
         "loaderVersion": profile.get("loaderVersion", ""),
         "minimumRam": profile.get("minimumRam", "2G"),
         "maximumRam": profile.get("maximumRam", "6G"),
         "port": int(profile.get("port", manager.DEFAULT_PORT)),
         "running": running,
-        "status": "online" if running and manager.port_open(int(profile.get("port", manager.DEFAULT_PORT))) else ("starting" if running else "offline"),
+        "status": "online" if running and (game == "palworld" or manager.port_open(int(profile.get("port", manager.DEFAULT_PORT)))) else ("starting" if running else "offline"),
         "folderExists": folder.is_dir(),
         "path": str(folder),
         "modsCount": len(mods),
@@ -974,7 +976,8 @@ def save_profile_settings(profile_id: str, payload: dict) -> None:
     profile["name"] = name
     profile["minimumRam"] = minimum
     profile["maximumRam"] = maximum
-    profile["jvmArguments"] = [value.strip() for value in raw_jvm if value.strip()]
+    if manager.profile_game(profile) == "minecraft":
+        profile["jvmArguments"] = [value.strip() for value in raw_jvm if value.strip()]
     data = manager.registry()
     for index, current in enumerate(data["profiles"]):
         if current["id"] == profile_id:
@@ -1005,7 +1008,8 @@ def save_profile_settings(profile_id: str, payload: dict) -> None:
             else:
                 clean = str(value).replace("\r", " ").replace("\n", " ")[:250]
                 updates[destination] = clean
-    update_properties(folder / "server.properties", updates)
+    if manager.profile_game(profile) == "minecraft":
+        update_properties(folder / "server.properties", updates)
 
 
 def save_backup_settings(profile_id: str, payload: dict) -> dict:
@@ -1083,8 +1087,9 @@ def backup_file(profile: dict, name: str) -> Path:
 
 
 def validate_backup_archive(profile: dict, archive_path: Path) -> str:
-    """Validate an archive and return the single top-level Minecraft world folder."""
+    """Validate an archive and return the single top-level managed world folder."""
     roots: set[str] = set()
+    palworld = manager.profile_game(profile) == "palworld"
     expanded_bytes = 0
     try:
         with tarfile.open(archive_path, "r:gz") as archive:
@@ -1104,12 +1109,15 @@ def validate_backup_archive(profile: dict, archive_path: Path) -> str:
                 clean_parts = tuple(part for part in relative.parts if part not in {"", "."})
                 if len(clean_parts) == 2 and clean_parts[1] == "level.dat" and member.isfile():
                     roots.add(clean_parts[0])
+                elif palworld and len(clean_parts) >= 2 and member.isfile() and clean_parts[-1].lower() == "level.sav":
+                    roots.add(clean_parts[0])
             if member_count == 0:
                 raise manager.ManagerError("The selected backup is empty.")
     except (tarfile.TarError, EOFError) as error:
         raise manager.ManagerError("The selected file is not a readable .tar.gz world backup.") from error
     if len(roots) != 1:
-        raise manager.ManagerError("The backup must contain exactly one world folder with level.dat at its top level.")
+        marker = "Level.sav" if palworld else "level.dat"
+        raise manager.ManagerError(f"The backup must contain exactly one world folder with {marker}.")
     return next(iter(roots))
 
 
@@ -1130,8 +1138,9 @@ def apply_backup_archive(profile: dict, archive_path: Path) -> None:
                 # Members were explicitly path- and link-validated above.
                 archive.extractall(staging)
         restored = staging / archive_world_root
-        if not restored.is_dir() or not (restored / "level.dat").is_file():
-            raise manager.ManagerError("The extracted backup does not contain a valid Minecraft world.")
+        valid = restored.is_dir() and (any(restored.rglob("Level.sav")) if manager.profile_game(profile) == "palworld" else (restored / "level.dat").is_file())
+        if not valid:
+            raise manager.ManagerError("The extracted backup does not contain a valid managed world.")
         if world.exists():
             world.replace(rollback)
             moved_original = True
@@ -1376,17 +1385,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "Finish Playit setup before creating your first server. Open Setup Guide to continue."
                 )
             name = str(payload.get("name", "")).strip()
+            game = str(payload.get("game", "minecraft")).strip().lower()
             version = str(payload.get("minecraftVersion", "")).strip()
             loader = str(payload.get("loader", "vanilla")).lower()
             loader_version = str(payload.get("loaderVersion", "")).strip()
             minimum = str(payload.get("minimumRam", "2G")).upper()
             maximum = str(payload.get("maximumRam", "6G")).upper()
-            if not name or not version or loader not in {"vanilla", "fabric", "forge"}:
+            if game not in {"minecraft", "palworld"}:
+                raise manager.ManagerError("Choose Minecraft or Palworld.")
+            if not name or (game == "minecraft" and (not version or loader not in {"vanilla", "fabric", "forge"})):
                 raise manager.ManagerError("Name, Minecraft version, and a valid loader are required.")
             if not RAM_PATTERN.fullmatch(minimum) or not RAM_PATTERN.fullmatch(maximum):
                 raise manager.ManagerError("RAM values must look like 2G or 4096M.")
-            args = ["create", "instance", "--name", name, "--minecraft", version, "--loader", loader, "--min-ram", minimum, "--max-ram", maximum]
-            if loader_version:
+            args = ["create", "instance", "--name", name, "--game", game, "--min-ram", minimum, "--max-ram", maximum]
+            if game == "minecraft":
+                args.extend(["--minecraft", version, "--loader", loader])
+            if game == "minecraft" and loader_version:
                 args.extend(["--loader-version", loader_version])
             self.send_json(start_job("create", None, args), HTTPStatus.ACCEPTED)
         elif path == "/api/jobs/restore-backup":
@@ -1436,6 +1450,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
             elif action == "backup":
                 if manager.active_profile() and manager.active_profile()["id"] == profile["id"]:
+                    if manager.profile_game(profile) == "palworld":
+                        raise manager.ManagerError("Stop Palworld before creating a backup so its save files are consistent.")
                     control = manager.absolute_profile_path(profile) / ".control"
                     control.mkdir(exist_ok=True)
                     request = control / "backup.request"

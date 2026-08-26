@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#171b13">
-  <title>BlockOps — Minecraft Server Manager</title>
+  <title>BlockOps — Game Server Manager</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -26,7 +26,7 @@
 
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-heading">
-        <span>YOUR WORLDS</span>
+        <span>YOUR SERVERS</span>
         <span class="count-badge" id="profile-count">0</span>
       </div>
       <div class="server-list" id="server-list"></div>
@@ -84,10 +84,10 @@
 
         <nav class="tabs" aria-label="Server sections">
           <button class="tab active" data-tab="console">CONSOLE</button>
-          <button class="tab" data-tab="players">PLAYERS</button>
-          <button class="tab" data-tab="performance">PERFORMANCE</button>
+          <button class="tab minecraft-only" data-tab="players">PLAYERS</button>
+          <button class="tab minecraft-only" data-tab="performance">PERFORMANCE</button>
           <button class="tab" data-tab="settings">WORLD SETTINGS</button>
-          <button class="tab" data-tab="mods">MODS</button>
+          <button class="tab minecraft-only" data-tab="mods">MODS</button>
           <button class="tab" data-tab="files">CONFIG FILES</button>
           <button class="tab" data-tab="backups">BACKUPS</button>
         </nav>
@@ -107,7 +107,7 @@
           </div>
         </section>
 
-        <section class="tab-panel" id="tab-players">
+        <section class="tab-panel minecraft-only" id="tab-players">
           <div class="players-panel block-panel">
             <div class="panel-title">
               <div><span class="status-light" id="players-light"></span><strong>CONNECTED PLAYERS</strong></div>
@@ -121,7 +121,7 @@
           </div>
         </section>
 
-        <section class="tab-panel" id="tab-performance">
+        <section class="tab-panel minecraft-only" id="tab-performance">
           <div class="performance-stack">
             <section class="performance-hero block-panel">
               <div class="panel-title">
@@ -184,7 +184,7 @@
 
         <section class="tab-panel" id="tab-settings">
           <form class="settings-grid" id="settings-form">
-            <article class="settings-card block-panel">
+            <article class="settings-card block-panel minecraft-only">
               <div class="panel-title"><strong>SERVER IDENTITY</strong><span>Applies after restart</span></div>
               <label>Display name<input name="name" maxlength="80"></label>
               <label>Message of the day<input name="motd" maxlength="250"></label>
@@ -212,7 +212,7 @@
           </form>
         </section>
 
-        <section class="tab-panel" id="tab-mods">
+        <section class="tab-panel minecraft-only" id="tab-mods">
           <div class="management-panel block-panel">
             <div class="panel-title">
               <div><strong>MOD PACK</strong><span>Drop .jar files into this world</span></div>
@@ -285,9 +285,11 @@
 
   <div class="modal-backdrop" id="create-modal" hidden>
     <section class="modal block-panel" role="dialog" aria-modal="true" aria-labelledby="create-title">
-      <div class="modal-header"><div><p class="eyebrow">NEW WORLD</p><h2 id="create-title">CREATE A SERVER</h2></div><button class="close-button" data-close-modal aria-label="Close">×</button></div>
+      <div class="modal-header"><div><p class="eyebrow">NEW SERVER</p><h2 id="create-title">CREATE A SERVER</h2></div><button class="close-button" data-close-modal aria-label="Close">×</button></div>
       <form id="create-form">
         <label>Server name<input name="name" required maxlength="80" placeholder="The Overworld"></label>
+        <label>Game<select name="game" id="game-select"><option value="minecraft">Minecraft Java</option><option value="palworld">Palworld</option></select></label>
+        <div id="minecraft-create-options">
         <label>Minecraft version<input name="minecraftVersion" required list="version-list" placeholder="1.21.8"><datalist id="version-list"></datalist></label>
         <div class="loader-choices" role="radiogroup" aria-label="Server loader">
           <label><input type="radio" name="loader" value="vanilla" checked><span><b>GRASS</b><strong>VANILLA</strong><small>Original Minecraft</small></span></label>
@@ -295,6 +297,8 @@
           <label><input type="radio" name="loader" value="forge"><span><b>ANVIL</b><strong>FORGE</strong><small>Classic modpacks</small></span></label>
         </div>
         <label id="loader-version-field" hidden>Loader version<input name="loaderVersion" placeholder="Exact version for Forge"></label>
+        </div>
+        <p id="palworld-create-help" hidden>BlockOps will download Palworld Dedicated Server through SteamCMD. Create a Playit UDP tunnel targeting <strong>127.0.0.1:8211</strong>.</p>
         <div class="field-row"><label>Minimum RAM<input name="minimumRam" value="2G" required></label><label>Maximum RAM<input name="maximumRam" value="6G" required></label></div>
         <div class="modal-actions"><button type="button" class="mc-button" data-close-modal>CANCEL</button><button type="submit" class="mc-button primary">CREATE & INSTALL</button></div>
       </form>

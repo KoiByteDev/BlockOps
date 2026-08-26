@@ -147,6 +147,24 @@ class ServerManagerTests(unittest.TestCase):
                 command = manager.launch_command(profile)
             self.assertEqual(command, ["/java", "-XX:+UseG1GC", "-Xms2G", "-Xmx6G", "-jar", "server.jar", "nogui"])
 
+    def test_palworld_launch_command_uses_udp_game_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "PalServer.exe").write_bytes(b"server")
+            command = manager.launch_command({"game": "palworld", "path": str(root), "port": 8211})
+            self.assertEqual(command[:4], [str(root / "PalServer.exe"), "-port=8211", "-queryport=27016", "-players=32"])
+
+    def test_palworld_profile_world_path_is_save_games(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager.save_json(root / "profile.json", {"game": "palworld"})
+            self.assertEqual(manager.world_path(root), root / "Pal" / "Saved" / "SaveGames")
+
+    def test_palworld_is_not_offered_on_non_windows_hosts(self):
+        with mock.patch.object(manager, "IS_WINDOWS", False):
+            with self.assertRaisesRegex(manager.ManagerError, "Windows only"):
+                manager.steamcmd_executable()
+
     def test_detached_options_are_platform_specific(self):
         with mock.patch.object(manager, "IS_WINDOWS", False):
             self.assertEqual(manager.detached_process_options(), {"start_new_session": True})

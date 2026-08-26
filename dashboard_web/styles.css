@@ -24,6 +24,7 @@
 [hidden] { display: none !important; }
 html { min-width: 320px; background: var(--void); }
 body { margin: 0; min-height: 100vh; color: var(--ink); background: radial-gradient(circle at 75% -20%, #36472c 0, transparent 36%), linear-gradient(135deg, #12160f, #0a0c09 72%); font-family: var(--ui); }
+.palworld-profile .minecraft-only { display: none !important; }
 button, input, select { font: inherit; }
 button { color: inherit; }
 button, label, input, select { -webkit-tap-highlight-color: transparent; }

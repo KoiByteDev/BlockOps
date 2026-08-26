@@ -88,7 +88,7 @@ function selectProfile(profileId) {
 function statusDescription(profile) {
   if (profile.status === "online") return `Online on port ${profile.port}. Commands and players are live.`;
   if (profile.status === "starting") return `The server runner is preparing port ${profile.port}. Watch the console below.`;
-  return `Ready to launch Minecraft ${profile.minecraftVersion} with ${profile.loader}.`;
+  return profile.game === "palworld" ? "Ready to launch Palworld Dedicated Server on UDP port 8211." : `Ready to launch Minecraft ${profile.minecraftVersion} with ${profile.loader}.`;
 }
 
 function renderServerList(profiles) {
@@ -96,7 +96,7 @@ function renderServerList(profiles) {
   $("#server-list").innerHTML = profiles.map((profile) => `
     <button class="server-card ${profile.id === state.selectedId ? "selected" : ""}" data-profile="${escapeHtml(profile.id)}">
       <span class="server-thumb">${escapeHtml(profile.name.slice(0, 1).toUpperCase())}</span>
-      <span><strong>${escapeHtml(profile.name)}</strong><small>${escapeHtml(profile.minecraftVersion)} · ${escapeHtml(profile.loader)}</small></span>
+      <span><strong>${escapeHtml(profile.name)}</strong><small>${profile.game === "palworld" ? "PALWORLD" : `${escapeHtml(profile.minecraftVersion)} · ${escapeHtml(profile.loader)}`}</small></span>
       <i class="mini-state ${profile.status === "online" ? "online" : ""}" title="${escapeHtml(profile.status)}"></i>
     </button>
   `).join("");
@@ -155,8 +155,10 @@ function render() {
   renderJob(state.data.job);
   if (!$("#setup-modal").hidden && state.setup) renderSetupGuide(state.setup);
   if (!profile) return;
+  document.body.classList.toggle("palworld-profile", profile.game === "palworld");
+  if (profile.game === "palworld" && ["players", "performance", "mods"].includes(state.tab)) activateTab("console");
   const running = profile.status === "online" || profile.status === "starting";
-  $("#selected-type").textContent = `MINECRAFT ${profile.minecraftVersion} · ${profile.loader.toUpperCase()} SERVER`;
+  $("#selected-type").textContent = profile.game === "palworld" ? "PALWORLD DEDICATED SERVER" : `MINECRAFT ${profile.minecraftVersion} · ${profile.loader.toUpperCase()} SERVER`;
   $("#selected-name").textContent = profile.name;
   $("#selected-description").textContent = statusDescription(profile);
   $("#selected-state").className = `server-state ${profile.status}`;
@@ -167,8 +169,9 @@ function render() {
   $("#stat-players").textContent = players ? `${players.online}/${players.maximum} online` : (running ? "View list" : "0 online");
   $("#start-button").disabled = Boolean(state.data.activeProfileId) || state.data.job.status === "running";
   $("#stop-button").disabled = !running || state.data.job.status === "running";
-  $("#command-input").disabled = !running;
-  $("#command-form button").disabled = !running;
+  $("#command-input").disabled = !running || profile.game === "palworld";
+  $("#command-form button").disabled = !running || profile.game === "palworld";
+  $("#command-input").placeholder = profile.game === "palworld" ? "Palworld commands are not available in BlockOps yet" : "say Welcome to the server!";
   $("#console-light").classList.toggle("online", running);
   populateSettings(profile);
   populateBackupSettings(profile);
@@ -304,8 +307,8 @@ function renderSetupGuide(data) {
     }
   } else if (!data.tunnelConfirmed) {
     label = "BROWSER STEP";
-    title = "CREATE A MINECRAFT JAVA TUNNEL";
-    copy = "In Playit, add a Minecraft Java tunnel and set its local address to 127.0.0.1:25565. Save it, then confirm below.";
+    title = "CREATE YOUR GAME TUNNEL";
+    copy = "In Playit, add a Minecraft Java tunnel to 127.0.0.1:25565 for Minecraft, or a UDP tunnel to 127.0.0.1:8211 for Palworld. Save it, then confirm below.";
     external.hidden = false;
     external.textContent = "OPEN PLAYIT TUNNELS ↗";
     external.href = "https://playit.gg/account/tunnels";
@@ -317,7 +320,7 @@ function renderSetupGuide(data) {
     title = "YOUR CONNECTION IS READY";
     copy = data.profileReady
       ? "Playit is configured. Your servers can use the saved tunnel when they start."
-      : "Now create your first world. BlockOps will install Minecraft and Java without interrupting you for network setup.";
+      : "Now create your first server. BlockOps installs Minecraft or Palworld without interrupting you for network setup.";
     $("#setup-focus-icon").classList.add("ready");
     primary.hidden = data.profileReady;
     primary.textContent = "CREATE MY FIRST SERVER";
@@ -930,6 +933,12 @@ function wireEvents() {
   });
   $("#create-form").addEventListener("change", (event) => {
     if (event.target.name === "loader") $("#loader-version-field").hidden = event.target.value === "vanilla";
+    if (event.target.name === "game") {
+      const palworld = event.target.value === "palworld";
+      $("#minecraft-create-options").hidden = palworld;
+      $("#palworld-create-help").hidden = !palworld;
+      $("#create-form [name=minecraftVersion]").required = !palworld;
+    }
   });
   $("#create-form").addEventListener("submit", async (event) => {
     event.preventDefault();
