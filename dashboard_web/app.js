@@ -308,7 +308,7 @@ function renderSetupGuide(data) {
   } else if (!data.tunnelConfirmed) {
     label = "BROWSER STEP";
     title = "CREATE YOUR GAME TUNNEL";
-    copy = "In Playit, add a Minecraft Java tunnel to 127.0.0.1:25565 for Minecraft, or a UDP tunnel to 127.0.0.1:8211 for Palworld. Save it, then confirm below.";
+    copy = "In Playit, add a Minecraft Java tunnel to 127.0.0.1:25565 for Minecraft. For Palworld, choose Custom UDP (not the unsupported Palworld preset) and target 127.0.0.1:8211. Save it, then confirm below.";
     external.hidden = false;
     external.textContent = "OPEN PLAYIT TUNNELS ↗";
     external.href = "https://playit.gg/account/tunnels";
@@ -950,6 +950,8 @@ function wireEvents() {
       $("#minecraft-create-options").hidden = palworld;
       $("#palworld-create-help").hidden = !palworld;
       $("#create-form [name=minecraftVersion]").required = !palworld;
+      $("#create-form [name=minimumRam]").value = palworld ? "4G" : "2G";
+      $("#create-form [name=maximumRam]").value = palworld ? "16G" : "6G";
     }
   });
   $("#create-form").addEventListener("submit", async (event) => {

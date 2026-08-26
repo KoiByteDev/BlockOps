@@ -1,4 +1,7 @@
 import json
+import io
+import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +11,14 @@ import server_manager as manager
 
 
 class ServerManagerTests(unittest.TestCase):
+    def setUp(self):
+        self.state_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state_directory.cleanup)
+        invalid = Path(self.state_directory.name) / "playit.invalid"
+        patcher = mock.patch.object(manager, "PLAYIT_INVALID", invalid)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_slug(self):
         self.assertEqual(manager.slug("My Fabric 1.21!"), "my-fabric-1-21")
 
@@ -72,6 +83,7 @@ class ServerManagerTests(unittest.TestCase):
 
     def test_playit_setup_reuses_connected_agent(self):
         with mock.patch.object(manager, "playit_credential_ready", return_value=True), \
+             mock.patch.object(manager, "modern_playit_binaries", return_value=None), \
              mock.patch.object(manager, "start_playit", return_value=(123, 0)) as start:
             manager.setup_playit()
         start.assert_called_once_with()
@@ -185,15 +197,102 @@ class ServerManagerTests(unittest.TestCase):
             root = Path(directory)
             (root / "PalServer.exe").write_bytes(b"server")
             command = manager.launch_command({"game": "palworld", "path": str(root), "port": 8211})
-            self.assertEqual(command[:4], [str(root / "PalServer.exe"), "-port=8211", "-queryport=27016", "-players=32"])
+            self.assertEqual(command[:4], [str(root.resolve() / "PalServer.exe"), "-port=8211", "-queryport=27016", "-players=32"])
+
+    def test_mac_palworld_launches_linux_server_in_docker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "PalServer.sh").write_bytes(b"#!/bin/sh\n")
+            profile = {
+                "id": "pals", "name": "Pals", "game": "palworld", "path": str(root),
+                "palworldRuntime": "docker-linux", "launchExecutable": "PalServer.sh",
+                "port": 8211, "queryPort": 27016, "maximumRam": "8G",
+            }
+            with mock.patch.object(manager, "IS_MAC", True), \
+                 mock.patch.object(manager, "docker_executable", return_value=Path("/usr/local/bin/docker")):
+                command = manager.launch_command(profile)
+            self.assertEqual(command[:4], ["/usr/local/bin/docker", "run", "--rm", "--platform"])
+            self.assertIn("linux/arm64", command)
+            self.assertIn("127.0.0.1:8211:8211/udp", command)
+            self.assertIn("127.0.0.1:27016:27016/udp", command)
+            self.assertIn(f"{root.resolve()}:/palworld", command)
+            self.assertIn("8g", command)
+            self.assertIn(manager.PALWORLD_DOCKER_IMAGE, command)
+            self.assertIn("DISABLE_GENERATE_SETTINGS=true", command)
+
+    def test_mac_palworld_runner_does_not_wait_two_minutes_for_docker_client(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "profile.json").write_text(json.dumps({
+                "id": "pals", "name": "Pals", "game": "palworld",
+                "path": str(folder), "palworldRuntime": "docker-linux",
+            }))
+            (folder / ".control").mkdir()
+            process = mock.Mock()
+            process.poll.return_value = None
+            process.wait.side_effect = subprocess.TimeoutExpired("docker", 5)
+            def launch(*_args, **_kwargs):
+                (folder / ".control" / "stop.request").write_text("test\n")
+                return process
+            with mock.patch.object(manager, "IS_MAC", True), \
+                 mock.patch.object(manager, "SERVER_PID", folder / "server.pid"), \
+                 mock.patch.object(manager, "launch_command", return_value=["docker"]), \
+                 mock.patch.object(manager, "stop_palworld_runtime") as stop_runtime, \
+                 mock.patch.object(manager.subprocess, "Popen", side_effect=launch):
+                manager.runner_mode(str(folder))
+            stop_runtime.assert_called_once()
+            self.assertEqual(process.wait.call_args_list[0].kwargs["timeout"], 5)
+            process.terminate.assert_called_once()
+
+    def test_mac_palworld_readiness_checks_ports_inside_container(self):
+        profile = {
+            "id": "pals", "game": "palworld", "path": "/tmp/pals",
+            "palworldRuntime": "docker-linux", "port": 8211, "queryPort": 27016,
+        }
+        completed = mock.Mock(returncode=0)
+        with mock.patch.object(manager, "IS_MAC", True), \
+             mock.patch.object(manager.shutil, "which", return_value="/usr/local/bin/docker"), \
+             mock.patch.object(manager.subprocess, "run", return_value=completed) as run:
+            self.assertTrue(manager.palworld_ready(profile))
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["/usr/local/bin/docker", "exec", "blockops-palworld-pals"])
+        self.assertIn(":2013 ", command[-1])
+        self.assertIn(":6988 ", command[-1])
+
+    def test_mac_steamcmd_accepts_internal_framework_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtimes" / "steamcmd-mac"
+            runtime.mkdir(parents=True)
+            archive = runtime / "steamcmd_osx.tar.gz"
+            with tarfile.open(archive, "w:gz") as package:
+                script = b"#!/bin/sh\n"
+                member = tarfile.TarInfo("steamcmd.sh")
+                member.mode = 0o755
+                member.size = len(script)
+                package.addfile(member, io.BytesIO(script))
+                folder = tarfile.TarInfo("Frameworks/Breakpad.framework/Versions/A")
+                folder.type = tarfile.DIRTYPE
+                package.addfile(folder)
+                link = tarfile.TarInfo("Frameworks/Breakpad.framework/Versions/Current")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "A"
+                package.addfile(link)
+            with mock.patch.object(manager, "ROOT", root):
+                executable = manager.mac_steamcmd_executable()
+            self.assertTrue(executable.is_file())
+            self.assertEqual(
+                (runtime / "Frameworks/Breakpad.framework/Versions/Current").resolve(),
+                (runtime / "Frameworks/Breakpad.framework/Versions/A").resolve(),
+            )
 
     def test_palworld_profile_world_path_is_save_games(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             manager.save_json(root / "profile.json", {"game": "palworld"})
-            self.assertEqual(manager.world_path(root), root / "Pal" / "Saved" / "SaveGames")
+            self.assertEqual(manager.world_path(root), root.resolve() / "Pal" / "Saved" / "SaveGames")
 
-    def test_palworld_is_not_offered_on_non_windows_hosts(self):
+    def test_windows_steamcmd_is_not_used_on_non_windows_hosts(self):
         with mock.patch.object(manager, "IS_WINDOWS", False):
             with self.assertRaisesRegex(manager.ManagerError, "Windows only"):
                 manager.steamcmd_executable()
@@ -222,6 +321,13 @@ class ServerManagerTests(unittest.TestCase):
         # The fallback for existing legacy profiles remains unchanged.
         self.assertEqual(manager.backup_settings({})["intervalMinutes"], 10)
         self.assertEqual(manager.backup_settings({})["retention"], 12)
+
+    def test_cli_uses_palworld_sized_memory_defaults(self):
+        args = manager.parser().parse_args(["create", "instance", "--game", "palworld", "--name", "Pals"])
+        with mock.patch.object(manager, "make_palworld_profile", return_value={}) as create:
+            manager.make_profile(args)
+        self.assertEqual(create.call_args.args[0].min_ram, "4G")
+        self.assertEqual(create.call_args.args[0].max_ram, "16G")
 
     def test_live_player_count_uses_server_list_output(self):
         with tempfile.TemporaryDirectory() as directory:
