@@ -41,6 +41,7 @@ MANAGER_LOCK = STATE / "manager.lock"
 SERVER_PID = STATE / "server.pid"
 PLAYIT_PID = STATE / "playit.pid"
 PLAYIT_LOG = STATE / "playit.log"
+PLAYIT_INVALID = STATE / "playit.invalid"
 PLAYIT_CONFIG = ROOT / "playit.toml"
 PLAYIT_SOCKET = STATE / "playit.sock"
 PLAYIT_PORTABLE_URL = (
@@ -52,7 +53,13 @@ PALWORLD_PORT = 8211
 PALWORLD_QUERY_PORT = 27016
 PALWORLD_APP_ID = "2394010"
 STEAMCMD_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
+STEAMCMD_MAC_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz"
+PALWORLD_DOCKER_IMAGE = (
+    "thijsvanloef/palworld-server-docker@"
+    "sha256:be3ad49e373045a7b60478fd8b7f7411c1e293713dfa4733e563e798f276d688"
+)
 IS_WINDOWS = os.name == "nt"
+IS_MAC = platform.system() == "Darwin"
 # Legacy fallbacks are intentionally unchanged so profiles created before
 # backupSettings was persisted keep their existing effective behavior.
 BACKUP_INTERVAL_SECONDS = 10 * 60
@@ -446,8 +453,105 @@ def steamcmd_executable() -> Path:
     return executable
 
 
+def docker_executable() -> Path:
+    """Return a working Docker CLI for the macOS Palworld Linux runtime."""
+    executable = shutil.which("docker")
+    if not executable:
+        raise ManagerError(
+            "Palworld on macOS requires Docker Desktop. Install and start Docker Desktop, then retry."
+        )
+    result = subprocess.run(
+        [executable, "info", "--format", "{{.ServerVersion}}"],
+        text=True, encoding="utf-8", errors="replace", capture_output=True,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        suffix = f" ({detail[-1]})" if detail else ""
+        raise ManagerError(f"Docker Desktop is installed but is not running or accessible{suffix}.")
+    return Path(executable)
+
+
+def palworld_container_name(profile: dict) -> str:
+    """Return a stable Docker-safe name scoped to this BlockOps profile."""
+    identifier = slug(str(profile.get("id") or absolute_profile_path(profile).name)) or "server"
+    return f"blockops-palworld-{identifier}"[:63]
+
+
+def palworld_docker_platform() -> str:
+    return "linux/arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "linux/amd64"
+
+
+def mac_steamcmd_executable() -> Path:
+    """Install Valve's native macOS SteamCMD privately for Linux depot downloads."""
+    runtime = ROOT / "runtimes" / "steamcmd-mac"
+    executable = runtime / "steamcmd.sh"
+    if executable.is_file():
+        return executable
+    archive = runtime / "steamcmd_osx.tar.gz"
+    download(STEAMCMD_MAC_URL, archive)
+    with tarfile.open(archive, "r:gz") as package:
+        base = runtime.resolve()
+        for member in package.getmembers():
+            target = (runtime / member.name).resolve()
+            safe_kind = member.isfile() or member.isdir()
+            if member.issym() and not Path(member.linkname).is_absolute():
+                link_target = (runtime / member.name).parent.joinpath(member.linkname).resolve()
+                safe_kind = link_target.is_relative_to(base)
+            if not target.is_relative_to(base) or not safe_kind:
+                raise ManagerError("The macOS SteamCMD archive contains an unsafe path.")
+        if sys.version_info >= (3, 12):
+            package.extractall(runtime, filter="fully_trusted")
+        else:
+            package.extractall(runtime)
+    if not executable.is_file():
+        raise ManagerError("SteamCMD did not provide its macOS launcher. Retry creating the Palworld server.")
+    executable.chmod(executable.stat().st_mode | 0o111)
+    return executable
+
+
+def run_palworld_steamcmd(folder: Path) -> Path:
+    """Install the official Linux Palworld depot using native macOS SteamCMD."""
+    # Fail before the 5+ GB game download if the required runtime is unavailable.
+    docker_executable()
+    executable = mac_steamcmd_executable()
+    folder.mkdir(parents=True, exist_ok=True)
+    def run_steamcmd(arguments: list[str]) -> subprocess.CompletedProcess:
+        result = subprocess.run(
+            [executable, *arguments], cwd=executable.parent,
+            text=True, encoding="utf-8", errors="replace", capture_output=True,
+        )
+        output = f"{result.stdout}\n{result.stderr}".strip()
+        if output:
+            print(output)
+        return result
+
+    platform_args = ["+@sSteamCmdForcePlatformType", "linux"]
+    run_steamcmd([*platform_args, "+login", "anonymous", "+quit"])
+    command = [
+        *platform_args, "+force_install_dir", str(folder.resolve()),
+        "+login", "anonymous", "+app_update", PALWORLD_APP_ID, "validate", "+quit",
+    ]
+    result = run_steamcmd(command)
+    output = f"{result.stdout}\n{result.stderr}".strip()
+    server = folder / "PalServer.sh"
+    if "Missing configuration" in output and not server.is_file():
+        print("SteamCMD is finishing its initial configuration; retrying Palworld download …")
+        time.sleep(3)
+        result = run_steamcmd(command)
+        output = f"{result.stdout}\n{result.stderr}".strip()
+    if result.returncode or not server.is_file():
+        raise ManagerError(
+            "SteamCMD could not install the Palworld Linux dedicated server. "
+            "Review the creation log and confirm Docker Desktop has enough disk space."
+        )
+    server.chmod(server.stat().st_mode | 0o111)
+    return server
+
+
 def install_palworld(folder: Path) -> Path:
     """Install Palworld's anonymous SteamCMD dedicated-server package."""
+    if IS_MAC:
+        return run_palworld_steamcmd(folder)
     executable = steamcmd_executable()
     server = folder / "PalServer.exe"
     def run_steamcmd(arguments: list[str]) -> subprocess.CompletedProcess:
@@ -497,16 +601,21 @@ def make_palworld_profile(args) -> dict:
     try:
         install_palworld(folder)
         default_settings = folder / "DefaultPalWorldSettings.ini"
-        settings_path = folder / "Pal" / "Saved" / "Config" / "WindowsServer" / "PalWorldSettings.ini"
+        settings_platform = "WindowsServer" if IS_WINDOWS else "LinuxServer"
+        settings_path = folder / "Pal" / "Saved" / "Config" / settings_platform / "PalWorldSettings.ini"
         if not default_settings.is_file():
             raise ManagerError("Palworld installed but did not include its default server settings file.")
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(default_settings, settings_path)
+        (folder / "Pal" / "Saved" / "SaveGames" / "0").mkdir(parents=True, exist_ok=True)
         profile = {
             "id": profile_id, "name": name, "game": "palworld",
             "path": str(folder.relative_to(ROOT) if folder.is_relative_to(ROOT) else folder),
             "minimumRam": args.min_ram, "maximumRam": args.max_ram,
-            "launchExecutable": "PalServer.exe", "port": PALWORLD_PORT, "queryPort": PALWORLD_QUERY_PORT,
+            "launchExecutable": "PalServer.exe" if IS_WINDOWS else "PalServer.sh",
+            "palworldRuntime": "windows" if IS_WINDOWS else "docker-linux",
+            "containerAdminPassword": secrets.token_urlsafe(24) if not IS_WINDOWS else "",
+            "port": PALWORLD_PORT, "queryPort": PALWORLD_QUERY_PORT,
             "backupSettings": new_profile_backup_settings(),
         }
         save_json(folder / "profile.json", profile)
@@ -524,7 +633,11 @@ def make_palworld_profile(args) -> dict:
 
 def make_profile(args) -> dict:
     if getattr(args, "game", "minecraft") == "palworld":
+        args.min_ram = args.min_ram or "4G"
+        args.max_ram = args.max_ram or "16G"
         return make_palworld_profile(args)
+    args.min_ram = args.min_ram or "2G"
+    args.max_ram = args.max_ram or "6G"
     name = args.name or input("Profile name: ").strip()
     version = args.minecraft or input("Minecraft version: ").strip()
     loader = (args.loader or input("Loader (vanilla/fabric/forge): ").strip()).lower()
@@ -582,6 +695,13 @@ def make_profile(args) -> dict:
 
 
 def is_alive(pid: int) -> bool:
+    if not IS_WINDOWS:
+        try:
+            reaped, _ = os.waitpid(pid, os.WNOHANG)
+            if reaped == pid:
+                return False
+        except ChildProcessError:
+            pass
     try:
         os.kill(pid, 0)
         return True
@@ -630,6 +750,41 @@ def palworld_ports_bound(profile: dict) -> bool:
             except OSError:
                 continue
     return True
+
+
+def palworld_ready(profile: dict) -> bool:
+    """Verify Palworld itself, rather than only Docker's host port proxy, is ready."""
+    if IS_MAC and profile.get("palworldRuntime", "").startswith("docker-linux"):
+        docker = shutil.which("docker")
+        if not docker:
+            return False
+        ports = (
+            f"{int(profile.get('port', PALWORLD_PORT)):04X}",
+            f"{int(profile.get('queryPort', PALWORLD_QUERY_PORT)):04X}",
+        )
+        script = " && ".join(
+            f"grep -qi ':{port} ' /proc/net/udp /proc/net/udp6 2>/dev/null" for port in ports
+        )
+        result = subprocess.run(
+            [docker, "exec", palworld_container_name(profile), "/bin/sh", "-c", script],
+            capture_output=True,
+        )
+        return result.returncode == 0
+    return palworld_ports_bound(profile)
+
+
+def stop_palworld_runtime(profile: dict, timeout: int = 120) -> None:
+    """Ask the macOS Palworld container to stop and flush before its runner exits."""
+    if not (IS_MAC and profile.get("palworldRuntime", "").startswith("docker-linux")):
+        return
+    docker = shutil.which("docker")
+    if not docker:
+        return
+    subprocess.run(
+        [docker, "stop", "--timeout", str(timeout), palworld_container_name(profile)],
+        text=True, encoding="utf-8", errors="replace", capture_output=True,
+        timeout=timeout + 10,
+    )
 
 
 def playit_executable_candidates() -> list[Path]:
@@ -760,14 +915,17 @@ def playit_secret_from_output(output: str) -> str | None:
 def playit_credential_ready() -> bool:
     """Return whether Playit has persisted a non-empty account credential."""
     try:
-        return PLAYIT_CONFIG.is_file() and PLAYIT_CONFIG.stat().st_size > 0
+        return PLAYIT_CONFIG.is_file() and PLAYIT_CONFIG.stat().st_size > 0 and not PLAYIT_INVALID.exists()
     except OSError:
         return False
 
 
 def setup_playit() -> None:
     """Install/start Playit before the first world and surface its secure claim URL."""
-    if playit_credential_ready():
+    # Legacy agents have no status CLI, so their persisted credential remains
+    # the best available signal. Modern playitd credentials must be checked by
+    # the daemon; a non-empty file can contain an expired or revoked key.
+    if playit_credential_ready() and not modern_playit_binaries():
         pid, _ = start_playit()
         print(f"Playit is connected and ready (PID {pid}).")
         return
@@ -808,7 +966,8 @@ def setup_playit() -> None:
             )
             if "Phase: waiting for secret" in status.stdout:
                 break
-            if "Phase: running" in status.stdout and playit_credential_ready():
+            if "Phase: running" in status.stdout and PLAYIT_CONFIG.is_file() and PLAYIT_CONFIG.stat().st_size:
+                PLAYIT_INVALID.unlink(missing_ok=True)
                 print("Playit account is already connected.")
                 return
             time.sleep(0.5)
@@ -816,7 +975,10 @@ def setup_playit() -> None:
             raise ManagerError(f"Playit started but its local service did not become ready. Review {PLAYIT_LOG}")
         print("Playit is ready. Open the secure claim URL below and approve this computer.")
         result = subprocess.run([cli, "--socket-path", PLAYIT_SOCKET, "setup"])
-        if result.returncode or not playit_credential_ready():
+        if result.returncode:
+            raise ManagerError("The Playit account claim was not completed. Retry and approve the agent in your browser.")
+        PLAYIT_INVALID.unlink(missing_ok=True)
+        if not playit_credential_ready():
             raise ManagerError("The Playit account claim was not completed. Retry and approve the agent in your browser.")
         print("Playit account connected successfully.")
         return
@@ -900,8 +1062,10 @@ def ensure_playit_enabled(pid: int, log_offset: int, timeout: int = 30, profile:
         if not status or status.returncode != 0 or "Phase: starting" in status.stdout:
             raise ManagerError(f"playit.gg daemon did not become ready. Review {PLAYIT_LOG}")
         if "Phase: waiting for secret" in status.stdout:
+            if PLAYIT_CONFIG.is_file() and PLAYIT_CONFIG.stat().st_size:
+                PLAYIT_INVALID.touch()
             if not sys.stdin.isatty():
-                raise ManagerError("playit.gg must be claimed interactively before starting a server.")
+                raise ManagerError("Playit's saved account credential is invalid. Open Setup Guide and reconnect your Playit account before starting the server.")
             print("\nplayit.gg is not enabled yet. Starting its secure account-claim setup …")
             setup = subprocess.run([modern_cli, "--socket-path", PLAYIT_SOCKET, "setup"])
             if setup.returncode:
@@ -911,9 +1075,11 @@ def ensure_playit_enabled(pid: int, log_offset: int, timeout: int = 30, profile:
                 text=True, encoding="utf-8", errors="replace", capture_output=True,
             )
         elif "Phase: invalid secret" in status.stdout:
+            PLAYIT_INVALID.touch()
             raise ManagerError("Playit's saved account credential is invalid. Remove playit.toml and start again to reclaim it.")
         if status.returncode or "Phase: running" not in status.stdout:
             raise ManagerError("Playit is not authenticated and running; the server was not started.")
+        PLAYIT_INVALID.unlink(missing_ok=True)
         print("playit.gg agent is authenticated and online.")
         print(f"Ensure your Playit dashboard has a {tunnel_help}.")
         return
@@ -973,8 +1139,13 @@ def stop_process(pid_path: Path, timeout: int = 15) -> None:
     if IS_WINDOWS:
         subprocess.run(["taskkill", "/PID", str(pid), "/T"], capture_output=True)
     else:
-        with contextlib.suppress(ProcessLookupError):
+        try:
             os.killpg(pid, signal.SIGTERM)
+        except PermissionError:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     deadline = time.time() + timeout
     while is_alive(pid) and time.time() < deadline:
         time.sleep(0.2)
@@ -982,14 +1153,47 @@ def stop_process(pid_path: Path, timeout: int = 15) -> None:
         if IS_WINDOWS:
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
         else:
-            with contextlib.suppress(ProcessLookupError):
+            try:
                 os.killpg(pid, signal.SIGKILL)
+            except PermissionError:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
     pid_path.unlink(missing_ok=True)
 
 
 def launch_command(profile: dict) -> list[str]:
     folder = absolute_profile_path(profile)
     if profile_game(profile) == "palworld":
+        if IS_MAC and profile.get("palworldRuntime", "").startswith("docker-linux"):
+            executable = folder / profile.get("launchExecutable", "PalServer.sh")
+            if not executable.is_file():
+                raise ManagerError(f"Palworld server executable is missing: {executable}")
+            docker = docker_executable()
+            port = int(profile.get("port", PALWORLD_PORT))
+            query_port = int(profile.get("queryPort", PALWORLD_QUERY_PORT))
+            command = [
+                str(docker), "run", "--rm", "--platform", palworld_docker_platform(),
+                "--name", palworld_container_name(profile),
+                "--stop-timeout", "120", "--memory", str(profile.get("maximumRam", "6G")).lower(),
+                "--publish", f"127.0.0.1:{port}:{port}/udp",
+                "--publish", f"127.0.0.1:{query_port}:{query_port}/udp",
+                "--volume", f"{folder.resolve()}:/palworld",
+                "--env", "PUID=1000", "--env", "PGID=1000",
+                "--env", f"PORT={port}", "--env", f"QUERY_PORT={query_port}",
+                "--env", "PLAYERS=32", "--env", f"SERVER_NAME={profile['name']}",
+                "--env", "UPDATE_ON_BOOT=false", "--env", "AUTO_UPDATE_ENABLED=false",
+                "--env", "BACKUP_ENABLED=false", "--env", "REST_API_ENABLED=false",
+                "--env", "RCON_ENABLED=true",
+                "--env", f"ADMIN_PASSWORD={profile.get('containerAdminPassword', 'blockops-internal')}",
+                "--env", "DISABLE_GENERATE_SETTINGS=true",
+                "--env", "PALWORLD_ALLOW_NEGATIVE_DELTA_TIME=true",
+            ]
+            if palworld_docker_platform() == "linux/arm64":
+                command.extend(["--env", "ARM64_DEVICE=m1"])
+            command.append(PALWORLD_DOCKER_IMAGE)
+            return command
         executable = folder / profile.get("launchExecutable", "PalServer.exe")
         if not executable.is_file():
             raise ManagerError(f"Palworld server executable is missing: {executable}")
@@ -1145,12 +1349,22 @@ def runner_mode(profile_path: str) -> None:
                                 runner_log.flush()
                         write_server_command(process, "save-all flush")
                         write_server_command(process, "stop")
+                    elif game == "palworld" and IS_MAC:
+                        stop_palworld_runtime(profile)
                     else:
                         process.terminate()
+                    # `docker stop` is authoritative for the macOS Palworld
+                    # runtime.  The attached `docker run` client can linger
+                    # after its container has already flushed and exited, so
+                    # do not leave the dashboard saying "stopping" for two
+                    # additional minutes while waiting on that wrapper.
+                    wait_timeout = 5 if game == "palworld" and IS_MAC else 120
                     try:
-                        process.wait(timeout=120)
+                        process.wait(timeout=wait_timeout)
                     except subprocess.TimeoutExpired:
                         process.terminate()
+                        with contextlib.suppress(subprocess.TimeoutExpired):
+                            process.wait(timeout=3)
                     break
                 if game == "minecraft" and next_backup is not None and time.monotonic() >= next_backup:
                     if settings.get("onlyWhenEmpty"):
@@ -1213,7 +1427,7 @@ def start_profile(profile: dict, timeout: int) -> None:
             if profile_game(profile) == "minecraft" and port_open(port):
                 print(f"{profile['name']} is online through the configured playit.gg public address.")
                 return
-            if profile_game(profile) == "palworld" and time.time() >= palworld_ready_after and palworld_ports_bound(profile):
+            if profile_game(profile) == "palworld" and time.time() >= palworld_ready_after and palworld_ready(profile):
                 print(f"{profile['name']} is running through the configured playit.gg public address.")
                 return
             if latest.exists():
@@ -1228,6 +1442,9 @@ def start_profile(profile: dict, timeout: int) -> None:
     except Exception:
         # Never leave a detached runner alive when startup fails. An orphaned
         # runner would let a later Start action launch a second game process.
+        if profile_game(profile) == "palworld":
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                stop_palworld_runtime(profile, timeout=30)
         if process.poll() is None:
             if IS_WINDOWS:
                 subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
@@ -1444,8 +1661,8 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("--loader", choices=["vanilla", "fabric", "forge"])
     create.add_argument("--loader-version")
     create.add_argument("--path")
-    create.add_argument("--min-ram", default="2G")
-    create.add_argument("--max-ram", default="6G")
+    create.add_argument("--min-ram")
+    create.add_argument("--max-ram")
     command = commands.add_parser("command", help="send a Minecraft console command")
     command.add_argument("text", nargs="+")
     commands.add_parser("console", help="open a detachable live server console")

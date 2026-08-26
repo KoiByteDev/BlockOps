@@ -1,6 +1,6 @@
 # BlockOps
 
-BlockOps is a local game-server manager for Windows and macOS. Its browser dashboard creates Minecraft Java (Vanilla, Fabric, and Forge) servers and, on Windows, Palworld Dedicated Servers; safely starts and stops worlds; manages configuration; shows logs; makes scheduled backups; and connects the active server through playit.gg.
+BlockOps is a local game-server manager for Windows and macOS. Its browser dashboard creates Minecraft Java (Vanilla, Fabric, and Forge) and Palworld Dedicated Servers; safely starts and stops worlds; manages configuration; shows logs; makes scheduled backups; and connects the active server through playit.gg.
 
 The dashboard is private to the computer (`127.0.0.1:8765`) and protected by a random local launch token. Worlds and account credentials are excluded from Git.
 
@@ -29,6 +29,8 @@ No system Python or Java installation is required. The first-run installer downl
 
 Setup is safe to run again. It reuses the private runtime and verifies the app before opening it. Developer tests are not required for installation, so a release copy without the `tests` folder still installs normally.
 
+Palworld has no native macOS dedicated-server build. On a Mac, BlockOps downloads the official Linux depot with Valve's native macOS SteamCMD and runs it in the open-source `thijsvanloef/palworld-server-docker` runtime. Install and start [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) before creating a Palworld profile. Apple Silicon Macs use the container's native ARM64/Box64 path; 16 GB is the recommended Palworld limit, and the runtime includes a clock-safety workaround needed by Palworld 1.0 under ARM emulation.
+
 ## First-time connection setup
 
 Before creating the first server, BlockOps opens a guided connection setup:
@@ -36,7 +38,7 @@ Before creating the first server, BlockOps opens a guided connection setup:
 1. On Windows, choose **Install Playit**. BlockOps downloads the signed official portable agent. On macOS, use the official Playit download link, install the app, and return to BlockOps.
 2. Choose **Connect Account**, open the one-time **Claim Playit Agent** link, and approve this computer on playit.gg. Account credentials are entered only on Playit's site.
 3. Open **Playit Tunnels**, create a **Minecraft Java** tunnel targeting `127.0.0.1:25565` for Minecraft or a **UDP** tunnel targeting `127.0.0.1:8211` for Palworld, and confirm that step in BlockOps.
-4. Choose **Create My First Server**, select the game, and choose RAM limits. Minecraft validates the version and downloads the correct Java runtime. Palworld downloads its official Dedicated Server package through SteamCMD on Windows. Forge requires an exact Forge version; Fabric can select the latest stable loader automatically.
+4. Choose **Create My First Server**, select the game, and choose RAM limits. Minecraft validates the version and downloads the correct Java runtime. Palworld downloads its official Dedicated Server package through SteamCMD directly on Windows or through Docker Desktop on macOS. Forge requires an exact Forge version; Fabric can select the latest stable loader automatically.
 
 The **Setup Guide** reports installation, account, and tunnel status separately and provides recovery guidance when a download, firewall, antivirus, permission, or agent-start problem occurs. Existing installations with servers are never blocked by this newly introduced first-run gate.
 
@@ -48,7 +50,7 @@ The graphical dashboard is recommended, but direct commands are available:
 | --- | --- | --- |
 | Open manager | `./server-manager` | `server-manager.bat` |
 | Create server | `./server-manager create instance --name Survival --minecraft 1.21.8 --loader fabric` | `server-manager.bat create instance --name Survival --minecraft 1.21.8 --loader fabric` |
-| Create Palworld server (Windows) | `./server-manager create instance --game palworld --name Pals` | `server-manager.bat create instance --game palworld --name Pals` |
+| Create Palworld server | `./server-manager create instance --game palworld --name Pals --max-ram 16G` | `server-manager.bat create instance --game palworld --name Pals --max-ram 16G` |
 | Start | `./server-manager start instance --profile survival` | `server-manager.bat start instance --profile survival` |
 | Console | `./server-manager console` | `server-manager.bat console` |
 | Stop safely | `./server-manager stop instance` | `server-manager.bat stop instance` |
@@ -84,4 +86,4 @@ python3 -m unittest discover -s tests -t . -v
 
 GitHub Actions runs the same tests on Windows and macOS for every push and pull request. Network access is required only for initial setup and first-time downloads of Minecraft, Java, loaders, and Playit.
 
-Downloads are obtained from the official Astral, Mojang, Fabric, Forge, Eclipse Adoptium, Azul, and `playit-cloud/playit-agent` endpoints.
+Downloads are obtained from the official Astral, Mojang, Fabric, Forge, Eclipse Adoptium, Azul, Valve SteamCMD, and `playit-cloud/playit-agent` endpoints. The macOS Palworld runtime image is built from the open-source `thijsvanloef/palworld-server-docker` project because Pocketpair does not publish a native macOS server binary.
