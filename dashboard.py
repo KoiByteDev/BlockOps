@@ -1371,7 +1371,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def handle_api_post(self, path: str, payload: dict) -> None:
         if path == "/api/jobs/setup-playit":
-            self.send_json(start_job("playit setup", None, ["setup", "playit"]), HTTPStatus.ACCEPTED)
+            claim_code = str(payload.get("claimCode", "")).strip()
+            if claim_code and not re.fullmatch(r"[A-Fa-f0-9]{10}", claim_code):
+                raise manager.ManagerError("Invalid Playit claim code.")
+            args = ["setup", "playit"]
+            if claim_code:
+                args.extend(["--claim-code", claim_code])
+            self.send_json(start_job("playit setup", None, args), HTTPStatus.ACCEPTED)
         elif path == "/api/setup/tunnel-confirmed":
             self.send_json(confirm_playit_tunnel())
         elif path == "/api/jobs/start":

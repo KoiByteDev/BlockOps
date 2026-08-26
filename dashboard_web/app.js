@@ -293,7 +293,7 @@ function renderSetupGuide(data) {
     if (data.claimUrl) {
       label = "APPROVAL REQUIRED";
       title = "CLAIM THIS COMPUTER";
-      copy = "Open the secure Playit page, sign in, and approve this agent. Return here afterward—BlockOps will detect the local credential.";
+      copy = "Open the secure Playit page, sign in, and approve this agent. Then return here and click Check again to finish connecting this computer.";
       external.hidden = false;
       external.textContent = "CLAIM PLAYIT AGENT ↗";
       external.href = data.claimUrl;
@@ -868,7 +868,19 @@ function wireEvents() {
   $("#mobile-menu").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
   for (const button of [$("#create-server"), $("#empty-create")]) button.addEventListener("click", openCreateModal);
   $("#setup-guide").addEventListener("click", openSetupGuide);
-  $("#setup-check-action").addEventListener("click", openSetupGuide);
+  $("#setup-check-action").addEventListener("click", async () => {
+    // Resume the same pending claim exchange after browser-side approval. A
+    // guide refresh alone cannot write the credential returned by Playit.
+    if (state.setup?.playitInstalled && !state.setup.playitAccountReady) {
+      try {
+        const claimCode = state.setup.claimUrl?.match(/\/claim\/([A-Za-z0-9]{10})$/)?.[1];
+        await runAction("/api/jobs/setup-playit", claimCode ? { claimCode } : {});
+      } catch {
+        return;
+      }
+    }
+    await openSetupGuide();
+  });
   $("#playit-file-button").addEventListener("click", () => $("#playit-file-input").click());
   $("#playit-file-input").addEventListener("change", (event) => installDownloadedPlayit(event.target.files));
   $("#playit-copy-path").addEventListener("click", async () => {

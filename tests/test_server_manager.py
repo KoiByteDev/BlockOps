@@ -23,6 +23,39 @@ class ServerManagerTests(unittest.TestCase):
             self.assertEqual(manager.new_playit_claim_code(), "4a58dc72a8")
         token_hex.assert_called_once_with(5)
 
+    def test_playit_claim_code_is_reused_until_the_claim_exchanges(self):
+        with tempfile.TemporaryDirectory() as directory:
+            claim_file = Path(directory) / "playit-claim-code"
+            with mock.patch.object(manager, "PLAYIT_CLAIM_CODE", claim_file), \
+                 mock.patch.object(manager, "STATE", Path(directory)), \
+                 mock.patch.object(manager, "new_playit_claim_code", return_value="4a58dc72a8") as create:
+                self.assertEqual(manager.playit_claim_code(), "4a58dc72a8")
+                self.assertEqual(manager.playit_claim_code(), "4a58dc72a8")
+                manager.clear_playit_claim_code()
+            create.assert_called_once_with()
+            self.assertFalse(claim_file.exists())
+
+    def test_playit_setup_reuses_claim_after_browser_approval_was_delayed(self):
+        secret = "b" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "playit.toml"
+            claim_file = root / "playit-claim-code"
+            claim_file.write_text("4a58dc72a8", encoding="utf-8")
+            exchange = mock.Mock(returncode=0, stdout=secret, stderr="")
+            with mock.patch.object(manager, "PLAYIT_CONFIG", config), \
+                 mock.patch.object(manager, "PLAYIT_CLAIM_CODE", claim_file), \
+                 mock.patch.object(manager, "playit_credential_ready", return_value=False), \
+                 mock.patch.object(manager, "playit_executable", return_value=Path("playit.exe")), \
+                 mock.patch.object(manager, "supports_playit_commands", return_value=True), \
+                 mock.patch.object(manager, "modern_playit_binaries", return_value=None), \
+                 mock.patch.object(manager.subprocess, "run", return_value=exchange) as run, \
+                 mock.patch.object(manager, "start_playit", return_value=(123, 0)):
+                manager.setup_playit("4a58dc72a8")
+            self.assertEqual(run.call_args.args[0][-5:], ["claim", "exchange", "4a58dc72a8", "--wait", "45"])
+            self.assertEqual(config.read_text(encoding="utf-8"), f'secret_key = "{secret}"\n')
+            self.assertFalse(claim_file.exists())
+
     def test_playit_secret_parser_handles_terminal_output(self):
         secret = "a" * 64
         self.assertEqual(manager.playit_secret_from_output(f"\x1b[;m{secret}\x1b[0m"), secret)

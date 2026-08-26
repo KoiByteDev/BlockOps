@@ -43,6 +43,7 @@ PLAYIT_PID = STATE / "playit.pid"
 PLAYIT_LOG = STATE / "playit.log"
 PLAYIT_CONFIG = ROOT / "playit.toml"
 PLAYIT_SOCKET = STATE / "playit.sock"
+PLAYIT_CLAIM_CODE = STATE / "playit-claim-code"
 PLAYIT_PORTABLE_URL = (
     "https://github.com/playit-cloud/playit-agent/releases/download/"
     "v0.17.1/playit-windows-x86_64-signed.exe"
@@ -620,16 +621,15 @@ def game_port_in_use(profile: dict) -> bool:
     return udp_port_bound(port) or udp_port_bound(query_port)
 
 
-def palworld_ports_bound(profile: dict) -> bool:
-    """Return true only after Palworld has bound both its game and query ports."""
-    for port in (int(profile.get("port", PALWORLD_PORT)), int(profile.get("queryPort", PALWORLD_QUERY_PORT))):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            try:
-                sock.bind(("127.0.0.1", port))
-                return False
-            except OSError:
-                continue
-    return True
+def palworld_game_port_bound(profile: dict) -> bool:
+    """Return whether Palworld is listening on its player-facing UDP port."""
+    port = int(profile.get("port", PALWORLD_PORT))
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+            return False
+        except OSError:
+            return True
 
 
 def playit_executable_candidates() -> list[Path]:
@@ -750,6 +750,39 @@ def new_playit_claim_code() -> str:
     return secrets.token_hex(5)
 
 
+def pending_playit_claim_code() -> str | None:
+    """Return the unexchanged Playit claim code, if this computer has one."""
+    try:
+        code = PLAYIT_CLAIM_CODE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return code if re.fullmatch(r"[A-Fa-f0-9]{10}", code) else None
+
+
+def playit_claim_code() -> str:
+    """Reuse a pending claim so a browser approval can be resumed after a delay."""
+    existing = pending_playit_claim_code()
+    if existing:
+        return existing
+    code = new_playit_claim_code()
+    STATE.mkdir(parents=True, exist_ok=True)
+    PLAYIT_CLAIM_CODE.write_text(code, encoding="utf-8")
+    return code
+
+
+def save_playit_claim_code(code: str) -> None:
+    """Persist a valid code displayed by an earlier dashboard claim attempt."""
+    if not re.fullmatch(r"[A-Fa-f0-9]{10}", code):
+        raise ManagerError("Invalid Playit claim code.")
+    STATE.mkdir(parents=True, exist_ok=True)
+    PLAYIT_CLAIM_CODE.write_text(code, encoding="utf-8")
+
+
+def clear_playit_claim_code() -> None:
+    """Discard a claim code once its credential has been safely stored."""
+    PLAYIT_CLAIM_CODE.unlink(missing_ok=True)
+
+
 def playit_secret_from_output(output: str) -> str | None:
     """Extract Playit's 256-bit secret returned by ``claim exchange``."""
     clean = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))", "", output)
@@ -765,7 +798,7 @@ def playit_credential_ready() -> bool:
         return False
 
 
-def setup_playit() -> None:
+def setup_playit(claim_code: str | None = None) -> None:
     """Install/start Playit before the first world and surface its secure claim URL."""
     if playit_credential_ready():
         pid, _ = start_playit()
@@ -777,7 +810,14 @@ def setup_playit() -> None:
         # Playit's official claim generator is five random bytes encoded as
         # ten hexadecimal characters. Generate it here instead of scraping
         # the CLI's terminal UI, which is not stable when stdout is captured.
-        code = new_playit_claim_code()
+        # Keep the code until the exchange succeeds. Claim approval can take
+        # longer than the CLI's wait window (for example, while the account is
+        # at its agent limit and the user removes an old agent). Retrying setup
+        # must exchange that same, already-approved claim rather than create a
+        # second agent and strand the first one.
+        if claim_code:
+            save_playit_claim_code(claim_code)
+        code = claim_code or playit_claim_code()
         claim_url = f"https://playit.gg/claim/{code}"
         print(f"Claim this computer's Playit agent: {claim_url}")
         exchanged = subprocess.run(
@@ -791,6 +831,7 @@ def setup_playit() -> None:
             )
         PLAYIT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
         PLAYIT_CONFIG.write_text(f'secret_key = "{secret}"\n', encoding="utf-8")
+        clear_playit_claim_code()
         pid, _ = start_playit()
         print(f"Playit account connected successfully (PID {pid}).")
         return
@@ -1213,7 +1254,7 @@ def start_profile(profile: dict, timeout: int) -> None:
             if profile_game(profile) == "minecraft" and port_open(port):
                 print(f"{profile['name']} is online through the configured playit.gg public address.")
                 return
-            if profile_game(profile) == "palworld" and time.time() >= palworld_ready_after and palworld_ports_bound(profile):
+            if profile_game(profile) == "palworld" and time.time() >= palworld_ready_after and palworld_game_port_bound(profile):
                 print(f"{profile['name']} is running through the configured playit.gg public address.")
                 return
             if latest.exists():
@@ -1452,6 +1493,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("status", help="show profiles and process status")
     setup = commands.add_parser("setup", help="prepare an external service before creating a server")
     setup.add_argument("noun", choices=["playit"])
+    setup.add_argument("--claim-code", help=argparse.SUPPRESS)
     run = commands.add_parser("_run", help=argparse.SUPPRESS)
     run.add_argument("profile_path")
     return result
@@ -1492,7 +1534,7 @@ def main() -> int:
             elif args.action == "status":
                 show_status()
             elif args.action == "setup" and args.noun == "playit":
-                setup_playit()
+                setup_playit(args.claim_code)
         return 0
     except (ManagerError, OSError) as error:
         print(f"Error: {error}", file=sys.stderr)
