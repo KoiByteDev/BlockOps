@@ -322,3 +322,7 @@ input:focus, select:focus { border-color: var(--grass); box-shadow: 0 0 0 2px #5
 .bedrock-profile .switch-row.bedrock-only { display: flex !important; }
 .bedrock-profile #tab-addons:not(.active) { display: none !important; }
 #bedrock-create-options p, #tab-addons p, .bedrock-only p { line-height: 1.6; color: var(--text-muted, #b3b9b1); }
+
+#session-notice { position: sticky; top: 0; z-index: 100; margin: 0; }
+#proxy-log { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+[name="waterdogConfig"] { width: 100%; resize: vertical; font-family: monospace; }

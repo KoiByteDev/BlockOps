@@ -26,6 +26,7 @@ import zipfile
 from pathlib import Path
 
 import bedrock_support as bedrock
+import app_session
 
 if os.name == "nt":
     import msvcrt
@@ -47,7 +48,17 @@ PLAYIT_PID = STATE / "playit.pid"
 PLAYIT_LOG = STATE / "playit.log"
 PLAYIT_INVALID = STATE / "playit.invalid"
 PLAYIT_CONFIG = DATA_ROOT / "playit.toml"
-PLAYIT_SOCKET = STATE / "playit.sock"
+def playit_socket_path(state: Path) -> Path:
+    path = state / "playit.sock"
+    if os.name != "nt" and len(str(path).encode()) > 90:
+        # macOS Unix sockets have a 104-byte pathname limit. Long installation
+        # paths and isolated test directories need a short, installation-unique name.
+        identity = hashlib.sha256(str(state.resolve()).encode()).hexdigest()[:12]
+        return Path(tempfile.gettempdir()) / f"bo-{os.getuid()}-{identity}.sock"
+    return path
+
+
+PLAYIT_SOCKET = playit_socket_path(STATE)
 PLAYIT_CLAIM_CODE = STATE / "playit-claim-code"
 PLAYIT_PORTABLE_URL = (
     "https://github.com/playit-cloud/playit-agent/releases/download/"
@@ -724,7 +735,7 @@ def make_bedrock_profile(args) -> dict:
     save_json(REGISTRY, data)
     print(f"Created {name}: Minecraft Bedrock, Docker linux/amd64. The first start downloads the official server (EULA accepted).")
     print("Apple Silicon uses amd64 emulation; enable Rosetta in Docker Desktop's Apple Virtualization Framework settings.")
-    print(f"Advertised address: {address}; TCP {args.port}, UDP {args.udp_port}. Remote Playit/WaterdogPE setup is manual; see README.")
+    print(f"Advertised address: {address}; TCP {args.port}, UDP {args.udp_port}. Configure managed Playit once in World Settings; see README.")
     return profile
 
 
@@ -1095,6 +1106,7 @@ def playit_executable_candidates() -> list[Path]:
 
     path_candidates: list[Path | None] = [
         Path(override).expanduser() if override else None,
+        ROOT / "runtimes" / "playit-scoped" / ("playit-cli.exe" if IS_WINDOWS else "playit-cli"),
         ROOT / "runtimes" / "playit" / ("playit.exe" if IS_WINDOWS else "playit"),
         Path("/Applications/playit.app/Contents/MacOS/playit") if not IS_WINDOWS else None,
         Path("/Applications/Playit.app/Contents/MacOS/playit") if not IS_WINDOWS else None,
@@ -1170,7 +1182,9 @@ def supports_playit_commands(candidate: Path) -> bool:
 
 def modern_playit_binaries() -> tuple[Path, Path] | None:
     """Find a modern playitd + CLI pair in BlockOps or an official Windows installation."""
-    folders = [ROOT / "runtimes" / "playit"]
+    folders = [ROOT / "runtimes" / "playit-scoped", ROOT / "runtimes" / "playit"]
+    if IS_MAC:
+        folders.extend([Path("/Applications/playit.app/Contents/MacOS"), Path("/Applications/Playit.app/Contents/MacOS"), Path.home() / "Applications" / "playit.app" / "Contents" / "MacOS"])
     if IS_WINDOWS:
         folders.extend(
             candidate.parent
@@ -1347,25 +1361,29 @@ def start_playit() -> tuple[int, int]:
     log_offset = PLAYIT_LOG.stat().st_size if PLAYIT_LOG.exists() else 0
     current = read_pid(PLAYIT_PID)
     if current:
+        session = os.environ.get("BLOCKOPS_SESSION_ID")
+        if session and not app_session.owned_process(PLAYIT_PID, session):
+            raise ManagerError("A Playit daemon from another BlockOps session is running. Close that session before connecting this one.")
         return current, log_offset
     modern = modern_playit_binaries()
     STATE.mkdir(parents=True, exist_ok=True)
-    log = PLAYIT_LOG.open("ab", buffering=0)
-    if modern:
-        modern_daemon, _ = modern
-        PLAYIT_SOCKET.unlink(missing_ok=True)
-        process = subprocess.Popen(
-            [modern_daemon, "--secret-path", PLAYIT_CONFIG, "--socket-path", PLAYIT_SOCKET, "--log-path", PLAYIT_LOG],
-            cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **detached_process_options(),
-        )
-    else:
-        executable = playit_executable()
-        if supports_playit_commands(executable):
-            command = [executable, "--secret_path", PLAYIT_CONFIG, "--stdout", "start"]
+    with PLAYIT_LOG.open("ab", buffering=0) as log:
+        if modern:
+            modern_daemon, _ = modern
+            PLAYIT_SOCKET.unlink(missing_ok=True)
+            process = subprocess.Popen(
+                [modern_daemon, "--secret-path", PLAYIT_CONFIG, "--socket-path", PLAYIT_SOCKET, "--log-path", PLAYIT_LOG],
+                cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **detached_process_options(),
+            )
         else:
-            command = [executable, "--config-file", PLAYIT_CONFIG, "--stdout-logs"]
-        process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **detached_process_options())
+            executable = playit_executable()
+            if supports_playit_commands(executable):
+                command = [executable, "--secret_path", PLAYIT_CONFIG, "--stdout", "start"]
+            else:
+                command = [executable, "--config-file", PLAYIT_CONFIG, "--stdout-logs"]
+            process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **detached_process_options())
     PLAYIT_PID.write_text(str(process.pid))
+    app_session.record_owner(PLAYIT_PID, process.pid)
     time.sleep(1)
     if process.poll() is not None:
         output = playit_output_since(log_offset)
@@ -1382,7 +1400,7 @@ def start_playit() -> tuple[int, int]:
 def ensure_playit_enabled(pid: int, log_offset: int, timeout: int = 30, profile: dict | None = None) -> None:
     """Require account claim/tunnel setup before a managed game is launched."""
     game = profile_game(profile or {})
-    tunnel_help = "Minecraft Java tunnel targeting 127.0.0.1:25565" if game == "minecraft" else "UDP tunnel targeting 127.0.0.1:8211 for Palworld"
+    tunnel_help = ("Minecraft Bedrock (NetherNet) tunnel with the WaterdogPE configuration in World Settings" if game == "bedrock" else ("Minecraft Java tunnel targeting 127.0.0.1:25565" if game == "minecraft" else "UDP tunnel targeting 127.0.0.1:8211 for Palworld"))
     modern = modern_playit_binaries()
     if modern:
         _, modern_cli = modern
@@ -1651,7 +1669,7 @@ def runner_mode(profile_path: str) -> None:
     folder = Path(profile_path)
     control = folder / ".control"
     control.mkdir(exist_ok=True)
-    if profile_game(profile) != "bedrock":
+    if profile_game(profile) != "bedrock" and not os.environ.get("BLOCKOPS_SESSION_ID"):
         (control / "stop.request").unlink(missing_ok=True)
     log_path = folder / "profile-runner.log"
     settings = backup_settings(profile)
@@ -1715,9 +1733,14 @@ def runner_mode(profile_path: str) -> None:
                     try:
                         process.wait(timeout=wait_timeout)
                     except subprocess.TimeoutExpired:
-                        process.terminate()
-                        with contextlib.suppress(subprocess.TimeoutExpired):
-                            process.wait(timeout=3)
+                        if os.environ.get("BLOCKOPS_SESSION_ID") and game == "minecraft":
+                            runner_log.write("Java is still saving; keeping the process alive until its safe stop finishes.\n")
+                            runner_log.flush()
+                            process.wait()
+                        else:
+                            process.terminate()
+                            with contextlib.suppress(subprocess.TimeoutExpired):
+                                process.wait(timeout=3)
                     break
                 if game == "minecraft" and next_backup is not None and time.monotonic() >= next_backup:
                     if settings.get("onlyWhenEmpty"):
@@ -1751,6 +1774,11 @@ def runner_mode(profile_path: str) -> None:
 
 
 def start_profile(profile: dict, timeout: int) -> None:
+    if app_session.cancellation_requested(STATE):
+        raise ManagerError("BlockOps is closing; the server was not started.")
+    if os.environ.get("BLOCKOPS_SESSION_ID") and profile_game(profile) == "bedrock":
+        import managed_network
+        managed_network.prepare(profile)
     port = int(profile.get("port", DEFAULT_PORT))
     if game_port_in_use(profile):
         raise ManagerError(f"Port {port} is already in use. Stop the active server first.")
@@ -1769,25 +1797,35 @@ def start_profile(profile: dict, timeout: int) -> None:
         except Exception:
             stop_process(PLAYIT_PID)
             raise
-    if profile_game(profile) == "bedrock":
+    if profile_game(profile) == "bedrock" or os.environ.get("BLOCKOPS_SESSION_ID"):
         control = folder / ".control"
         control.mkdir(exist_ok=True)
         for stale in ("stop.request", "backup.request", "command.request"):
             (control / stale).unlink(missing_ok=True)
+    if app_session.cancellation_requested(STATE):
+        raise ManagerError("BlockOps is closing; the server was not started.")
     # Only launch the server after Playit has been claimed and enabled. This
     # prevents Start instance from silently creating a localhost-only server.
     with (folder / "profile-runner.log").open("ab", buffering=0) as runner_log:
         process = subprocess.Popen([sys.executable, __file__, "_run", str(folder)], cwd=folder, stdin=subprocess.DEVNULL, stdout=runner_log, stderr=subprocess.STDOUT, **detached_process_options())
     (STATE / "runner.pid").write_text(str(process.pid))
+    app_session.record_owner(STATE / "runner.pid", process.pid)
+    if os.environ.get("BLOCKOPS_SESSION_ID"):
+        (STATE / "active-session").write_text(os.environ["BLOCKOPS_SESSION_ID"])
     latest = folder / "logs" / "latest.log"
     deadline = time.time() + timeout
     palworld_ready_after = time.time() + min(10, timeout)
     print(f"Starting {profile['name']} …")
     try:
         while time.time() < deadline:
+            if app_session.cancellation_requested(STATE):
+                raise ManagerError("BlockOps closed during startup; a safe stop was requested.")
             if process.poll() is not None:
                 raise ManagerError(f"Server runner exited. Review {folder / 'profile-runner.log'}")
             if profile_game(profile) == "bedrock" and bedrock_ready(profile):
+                if os.environ.get("BLOCKOPS_SESSION_ID"):
+                    import managed_network
+                    managed_network.start(profile)
                 print(f"{profile['name']} is ready locally. Player connections and remote networking need separate verification.")
                 return
             if profile_game(profile) == "minecraft" and port_open(port):
@@ -1806,9 +1844,17 @@ def start_profile(profile: dict, timeout: int) -> None:
             time.sleep(1)
         raise ManagerError(f"Server did not open port {port} within {timeout} seconds. Review {latest}")
     except Exception:
+        if app_session.cancellation_requested(STATE):
+            control = folder / ".control"
+            control.mkdir(exist_ok=True)
+            (control / "stop.request").write_text("BlockOps closed during startup\n")
+            raise ManagerError("BlockOps closed during startup. A safe stop was requested; the app will wait for saving to finish.")
         # Never leave a detached runner alive when startup fails. An orphaned
         # runner would let a later Start action launch a second game process.
         if profile_game(profile) == "bedrock":
+            if os.environ.get("BLOCKOPS_SESSION_ID"):
+                stop_process(STATE / "waterdog.pid")
+                stop_process(PLAYIT_PID)
             # Never kill a potentially saving BDS container on startup timeout.
             control = folder / ".control"
             control.mkdir(exist_ok=True)
@@ -1867,7 +1913,10 @@ def stop_profile() -> None:
             raise ManagerError("The server did not stop cleanly within 125 seconds.")
         stop_process(STATE / "runner.pid", timeout=3)
         SERVER_PID.unlink(missing_ok=True)
+    stop_process(STATE / "waterdog.pid")
     stop_process(PLAYIT_PID)
+    PLAYIT_SOCKET.unlink(missing_ok=True)
+    (STATE / "active-session").unlink(missing_ok=True)
     (STATE / "active-profile").unlink(missing_ok=True)
     print("The managed server and playit.gg are stopped.")
 
@@ -2013,6 +2062,8 @@ def interactive() -> None:
                 profile = profile_by_id(None, prompt=True)
                 (STATE / "active-profile").parent.mkdir(parents=True, exist_ok=True)
                 (STATE / "active-profile").write_text(profile["id"])
+                if os.environ.get("BLOCKOPS_SESSION_ID"):
+                    (STATE / "active-session").write_text(os.environ["BLOCKOPS_SESSION_ID"])
                 start_profile(profile, 900)
             elif choice == "2": stop_profile()
             elif choice == "3":
@@ -2058,7 +2109,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("console", help="open a detachable live server console")
     commands.add_parser("status", help="show profiles and process status")
     setup = commands.add_parser("setup", help="prepare an external service before creating a server")
-    setup.add_argument("noun", choices=["playit"])
+    setup.add_argument("noun", choices=["playit", "bedrock-network"])
     setup.add_argument("--claim-code", help=argparse.SUPPRESS)
     run = commands.add_parser("_run", help=argparse.SUPPRESS)
     run.add_argument("profile_path")
@@ -2090,10 +2141,13 @@ def main() -> int:
                 if active_profile():
                     raise ManagerError("Stop the active instance before starting another server.")
                 (STATE / "active-profile").write_text(profile["id"])
+                if not os.environ.get("BLOCKOPS_SESSION_ID"):
+                    (STATE / "active-session").unlink(missing_ok=True)
                 try:
                     start_profile(profile, args.timeout)
                 except Exception:
-                    if profile_game(profile) != "bedrock" or not (read_pid(STATE / "runner.pid") or bedrock_container_running(profile)):
+                    cancelled_runner = app_session.cancellation_requested(STATE) and read_pid(STATE / "runner.pid")
+                    if not cancelled_runner and (profile_game(profile) != "bedrock" or not (read_pid(STATE / "runner.pid") or bedrock_container_running(profile))):
                         (STATE / "active-profile").unlink(missing_ok=True)
                     raise
             elif args.action == "stop":
@@ -2103,7 +2157,15 @@ def main() -> int:
             elif args.action == "status":
                 show_status()
             elif args.action == "setup" and args.noun == "playit":
+                if os.environ.get("BLOCKOPS_SESSION_ID"):
+                    import managed_network
+                    managed_network.ensure_playit_tools()
                 setup_playit(args.claim_code)
+            elif args.action == "setup" and args.noun == "bedrock-network":
+                import managed_network
+                managed_network.ensure_playit_tools()
+                managed_network.ensure_waterdog()
+                print("Bedrock networking tools are ready. Connect your Playit account, then paste the tunnel configuration in World Settings.")
         return 0
     except (ManagerError, OSError) as error:
         print(f"Error: {error}", file=sys.stderr)

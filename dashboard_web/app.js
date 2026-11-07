@@ -17,6 +17,7 @@ const state = {
   performance: null,
   addonsSignature: "",
   setup: null,
+  sessionClosing: false,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -55,6 +56,7 @@ function formatMetric(value, suffix = "", digits = 1) {
 }
 
 function toast(message, type = "success") {
+  if (state.sessionClosed || !$("#toast-stack")) return;
   const node = document.createElement("div");
   node.className = `toast ${type}`;
   node.textContent = message;
@@ -124,6 +126,9 @@ function populateSettings(profile) {
   setFormValue(form, "minimumRam", profile.minimumRam);
   setFormValue(form, "maximumRam", profile.maximumRam);
   setFormValue(form, "jvmArguments", profile.jvmArguments.join(" "));
+  setFormValue(form, "playitEnabled", profile.bedrockRemote?.enabled);
+  setFormValue(form, "playitHostname", profile.bedrockRemote?.publicAddress || "");
+  $("#proxy-config-state").textContent = profile.bedrockRemote?.configured ? "Proxy configuration saved. Leave the private field blank to keep it." : "No proxy configuration saved.";
   for (const key of ["bedrockAddress", "bedrockBindAddress", "bedrockUdpPort", "port"]) setFormValue(form, key, profile[key]);
   for (const key of ["gamemode", "difficulty", "maxPlayers", "whiteList", "hardcore", "onlineMode", "pvp", "allowCheats", "texturepackRequired"]) {
     setFormValue(form, key, profile.properties[key]);
@@ -179,7 +184,7 @@ function render() {
   $("#stat-backups").textContent = `${profile.backupsCount} saved`;
   const players = state.players[profile.id];
   $("#stat-players").textContent = profile.game === "bedrock" ? (running ? "Use list in Console" : "0 online") : players ? `${players.online}/${players.maximum} online` : (running ? "View list" : "0 online");
-  $("#start-button").disabled = Boolean(state.data.activeProfileId) || state.data.job.status === "running";
+  $("#start-button").disabled = state.sessionClosing || Boolean(state.data.activeProfileId) || state.data.job.status === "running";
   $("#stop-button").disabled = !running || state.data.job.status === "running";
   $("#command-input").disabled = !running || profile.game === "palworld";
   $("#command-form button").disabled = !running || profile.game === "palworld";
@@ -215,8 +220,11 @@ function renderJob(current) {
 }
 
 async function refreshState(silent = false) {
+  if (state.sessionClosed) return;
   try {
-    state.data = await api("/api/state");
+    const data = await api("/api/state");
+    if (state.sessionClosed) return;
+    state.data = data;
     render();
     if (!state.data.profiles.length && !sessionStorage.getItem("blockops-setup-shown")) {
       sessionStorage.setItem("blockops-setup-shown", "1");
@@ -404,10 +412,12 @@ function colorizeLog(line) {
 }
 
 async function loadLog() {
+  if (state.sessionClosed) return;
   const profile = selectedProfile();
   if (!profile || state.tab !== "console") return;
   try {
     const data = await api(`/api/log?profile=${encodeURIComponent(profile.id)}`);
+    if (state.sessionClosed) return;
     const signature = `${profile.id}:${data.lines.length}:${data.lines.at(-1) || ""}:${state.clearBefore}`;
     if (signature === state.logSignature) return;
     state.logSignature = signature;
@@ -444,6 +454,7 @@ async function runAction(path, body = {}) {
 }
 
 async function loadAddons() {
+  if (state.sessionClosed) return;
   const profile = selectedProfile();
   if (!profile || profile.game !== "bedrock") return;
   const instanceId = profile.id;
@@ -490,6 +501,7 @@ async function uploadAddons(files) {
 }
 
 async function loadMods() {
+  if (state.sessionClosed) return;
   const profile = selectedProfile();
   if (!profile) return;
   try {
@@ -508,6 +520,7 @@ async function loadMods() {
 }
 
 async function loadBackups() {
+  if (state.sessionClosed) return;
   const profile = selectedProfile();
   if (!profile) return;
   try {
@@ -575,6 +588,7 @@ function renderPlayers(profile, players) {
 }
 
 async function loadPlayers(force = false) {
+  if (state.sessionClosed) return;
   const profile = selectedProfile();
   if (!profile) return;
   try {
@@ -873,6 +887,7 @@ function renderPerformance(profile, data) {
 }
 
 async function loadPerformance(force = false) {
+  if (state.sessionClosed) return;
   const profile = selectedProfile();
   if (!profile || state.tab !== "performance") return;
   try {
@@ -992,10 +1007,11 @@ function wireEvents() {
     const jvmArguments = String(form.get("jvmArguments") || "").match(/(?:[^\s"]+|"[^"]*")+/g) || [];
     try {
       await runAction(`/api/profiles/${encodeURIComponent(profile.id)}/settings`, {
-        ...(profile.game === "bedrock" ? { bedrockBindAddress: form.get("bedrockBindAddress"), bedrockAddress: form.get("bedrockAddress"), bedrockUdpPort: form.get("bedrockUdpPort"), port: form.get("port") } : {}),
+        ...(profile.game === "bedrock" ? { bedrockRemote: { enabled: form.has("playitEnabled"), publicAddress: form.get("playitHostname") }, waterdogConfig: form.get("waterdogConfig"), bedrockBindAddress: form.get("bedrockBindAddress"), bedrockAddress: form.get("bedrockAddress"), bedrockUdpPort: form.get("bedrockUdpPort"), port: form.get("port") } : {}),
         name: form.get("name"), minimumRam: form.get("minimumRam"), maximumRam: form.get("maximumRam"), jvmArguments: jvmArguments.map((value) => value.replace(/^"|"$/g, "")),
         properties: { motd: form.get("motd"), gamemode: form.get("gamemode"), difficulty: form.get("difficulty"), maxPlayers: form.get("maxPlayers"), whiteList: form.has("whiteList"), hardcore: form.has("hardcore"), onlineMode: form.has("onlineMode"), pvp: form.has("pvp"), allowCheats: form.has("allowCheats"), texturepackRequired: form.has("texturepackRequired") },
       });
+      $("#settings-form [name=waterdogConfig]").value = "";
       state.settingsDirty = false;
       await refreshState(true);
     } catch {}
@@ -1096,10 +1112,66 @@ function wireEvents() {
   for (const name of ["dragleave", "drop"]) dropZone.addEventListener(name, (event) => { event.preventDefault(); dropZone.classList.remove("dragging"); });
   dropZone.addEventListener("drop", (event) => uploadMods(event.dataTransfer.files));
   $("#job-collapse").addEventListener("click", () => $("#job-drawer").classList.toggle("collapsed"));
-  $("#quit-dashboard").addEventListener("click", async () => { if (confirm("Quit the dashboard? Running Minecraft servers will stay online.")) { await runAction("/api/shutdown"); document.body.innerHTML = '<main class="empty-state"><p class="eyebrow">DASHBOARD CLOSED</p><h1>YOUR SERVER KEEPS RUNNING</h1><p>You can close this tab and reopen BlockOps whenever you need it.</p></main>'; } });
+  $("#prepare-networking").addEventListener("click", () => runAction("/api/jobs/prepare-bedrock-network"));
+  $("#connect-networking").addEventListener("click", async () => { try { await runAction("/api/jobs/setup-playit"); await openSetupGuide(); } catch {} });
+  $("#settings-form [name=playitEnabled]").addEventListener("change", (event) => {
+    if (event.target.checked) {
+      const form = $("#settings-form");
+      for (const [name, value] of Object.entries({ bedrockBindAddress: "127.0.0.1", bedrockAddress: "127.0.0.1", port: "19142", bedrockUdpPort: "19142", onlineMode: false, whiteList: false })) setFormValue(form, name, value);
+      state.settingsDirty = true;
+    } else {
+      setFormValue($("#settings-form"), "onlineMode", true);
+      state.settingsDirty = true;
+    }
+  });
+  $("#show-proxy-log").addEventListener("click", async () => {
+    try {
+      const data = await api(`/api/proxy-log?profile=${encodeURIComponent(selectedProfile().id)}`);
+      $("#proxy-log").textContent = data.lines.join("\n") || "No proxy log yet. Start this instance with Playit enabled.";
+      $("#proxy-log").hidden = false;
+    } catch (error) { toast(error.message, "error"); }
+  });
+  $("#quit-dashboard").addEventListener("click", async () => {
+    if (state.sessionClosing) return;
+    try {
+      await api("/api/shutdown", { method: "POST", body: "{}" });
+      showSessionState({ state: "stopping", message: "Saving the server and stopping its managed services. Wait for shutdown to finish…" });
+    } catch (error) { toast(error.message, "error"); }
+  });
 }
 
+let sessionConnection = null;
+let sessionClientId = null;
+function showSessionState(session) {
+  if (!session || session.state === "open") return;
+  state.sessionClosing = true;
+  const notice = $("#session-notice");
+  notice.hidden = false;
+  notice.textContent = session.message;
+  if (session.state === "closed") {
+    sessionConnection?.close();
+    state.sessionClosed = true;
+    document.body.innerHTML = '<main class="empty-state"><h1>BLOCKOPS CLOSED</h1><p>The managed server and its Playit/proxy processes are stopped. You can close this tab.</p></main>';
+  } else {
+    $$("#start-button, #create-server, #create-backup").forEach((button) => { button.disabled = true; });
+  }
+}
+function connectSession() {
+  sessionConnection?.close();
+  sessionClientId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  sessionConnection = new EventSource(`/api/session/events?id=${encodeURIComponent(sessionClientId)}`);
+  sessionConnection.onmessage = (event) => {
+    try { showSessionState(JSON.parse(event.data)); } catch {}
+  };
+}
+window.addEventListener("pagehide", () => {
+  if (sessionClientId) navigator.sendBeacon("/api/session/leave", new Blob([JSON.stringify({ id: sessionClientId })], { type: "application/json" }));
+  sessionConnection?.close();
+});
+window.addEventListener("pageshow", (event) => { if (event.persisted) connectSession(); });
+
 async function init() {
+  connectSession();
   wireEvents();
   activateTab(state.tab);
   try {

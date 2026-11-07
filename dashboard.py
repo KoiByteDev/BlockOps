@@ -15,6 +15,7 @@ import platform
 import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -30,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 
 import server_manager as manager
+import app_session
 
 
 HOST = "127.0.0.1"
@@ -81,6 +83,7 @@ performance_lock = threading.Lock()
 performance_cache: dict[str, dict] = {}
 performance_history: dict[str, list[dict]] = {}
 filesystem_cache: dict[str, dict] = {}
+app_lifecycle = None
 
 LAG_PATTERN = re.compile(r"Can't keep up.*?Running (\d+)ms behind, skipping (\d+) tick", re.IGNORECASE)
 LOG_TIME_PATTERN = re.compile(r"\[(\d{2}:\d{2}:\d{2})\]")
@@ -119,6 +122,8 @@ def append_job_line(line: str) -> None:
 
 def run_job(kind: str, profile_id: str | None, command: list[str]) -> None:
     try:
+        if app_lifecycle and app_lifecycle.closing.is_set():
+            raise manager.ManagerError("BlockOps is closing. Reopen the app before starting another operation.")
         process = subprocess.Popen(
             command,
             cwd=manager.ROOT,
@@ -126,7 +131,10 @@ def run_job(kind: str, profile_id: str | None, command: list[str]) -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=1,
+            **manager.detached_process_options(),
         )
+        if app_lifecycle:
+            app_lifecycle.job_process, app_lifecycle.job_kind = process, kind
         assert process.stdout is not None
         for line in process.stdout:
             append_job_line(line)
@@ -153,6 +161,8 @@ def run_job(kind: str, profile_id: str | None, command: list[str]) -> None:
 
 
 def start_job(kind: str, profile_id: str | None, args: list[str]) -> dict:
+    if app_lifecycle and app_lifecycle.closing.is_set():
+        raise manager.ManagerError("BlockOps is closing. Reopen the app before starting another operation.")
     with job_lock:
         if job["status"] == "running":
             raise manager.ManagerError(f"{job['kind'].title()} is already in progress.")
@@ -752,6 +762,7 @@ def profile_summary(profile: dict, active_id: str | None) -> dict:
         "bedrockAddress": profile.get("bedrockAddress", "127.0.0.1"),
         "bedrockBindAddress": profile.get("bedrockBindAddress", "0.0.0.0"),
         "bedrockUdpPort": profile.get("bedrockUdpPort", 19140),
+        "bedrockRemote": {"enabled": bool(profile.get("bedrockRemote", {}).get("enabled")), "publicAddress": profile.get("bedrockRemote", {}).get("publicAddress", ""), "configured": (folder / ".blockops-network" / "waterdog" / "config.yml").is_file()},
         "minecraftVersion": profile.get("minecraftVersion", ""),
         "loader": profile.get("loader", ""),
         "loaderVersion": profile.get("loaderVersion", ""),
@@ -1016,12 +1027,24 @@ def save_bedrock_settings(profile: dict, payload: dict) -> None:
         raise manager.ManagerError("Server name must contain 1–80 characters on one line.")
     if not RAM_PATTERN.fullmatch(maximum):
         raise manager.ManagerError("Maximum RAM must look like 4G or 4096M.")
+    remote = payload.get('bedrockRemote', profile.get('bedrockRemote', {}))
+    if not isinstance(remote, dict) or type(remote.get('enabled', False)) is not bool:
+        raise manager.ManagerError('Playit settings must contain a true or false enabled value.')
+    remote_enabled = remote.get('enabled', False)
+    public_address = str(remote.get('publicAddress', '')).strip()
+    if public_address and (len(public_address) > 253 or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?', public_address)):
+        raise manager.ManagerError('Enter only the Playit tunnel hostname, without a protocol, port or path.')
     port = int(payload.get('port', profile['port']))
     udp = int(payload.get('bedrockUdpPort', profile.get('bedrockUdpPort', 19140)))
     address = manager.validate_bedrock_network(str(payload.get('bedrockAddress', profile.get('bedrockAddress', '127.0.0.1'))), port, udp)
     binding = payload.get('bedrockBindAddress', profile.get('bedrockBindAddress', '0.0.0.0'))
     if binding not in {'0.0.0.0', '127.0.0.1'}:
         raise manager.ManagerError('Choose loopback or all interfaces for the Docker binding.')
+    if remote_enabled:
+        # The server is stopped: make its backend private before disabling auth.
+        if port == 19132:
+            port = 19142
+        udp, address, binding = port, '127.0.0.1', '127.0.0.1'
     properties = payload.get('properties', {})
     if not isinstance(properties, dict):
         raise manager.ManagerError("Bedrock properties must be an object.")
@@ -1041,9 +1064,25 @@ def save_bedrock_settings(profile: dict, payload: dict) -> None:
             if type(properties[key]) is not bool:
                 raise manager.ManagerError(f"{key} must be true or false.")
             updates[prop] = str(properties[key]).lower()
+    if not remote_enabled and profile.get('bedrockRemote', {}).get('enabled'):
+        updates['online-mode'] = 'true'
+    if remote_enabled:
+        updates.update({'online-mode': 'false', 'allow-list': 'false', 'enable-lan-visibility': 'false'})
+        import managed_network
+        config = str(payload.get('waterdogConfig', ''))
+        if config.strip():
+            # Validate before changing profile/settings or replacing secrets.
+            managed_network.validate_proxy_config(config, port)
+        elif not (managed_network.proxy_folder(profile) / 'config.yml').is_file():
+            raise manager.ManagerError('Paste the WaterdogPE configuration from your Playit NetherNet tunnel first.')
+        else:
+            managed_network.validate_proxy_config((managed_network.proxy_folder(profile) / 'config.yml').read_text(encoding='utf-8'), port)
     motd = str(properties.get('motd', name)).replace('\r', ' ').replace('\n', ' ')[:250]
     updates['server-name'] = motd
     profile.update(name=name, maximumRam=maximum, port=port, bedrockUdpPort=udp, bedrockAddress=address, bedrockBindAddress=binding)
+    profile['bedrockRemote'] = {'enabled': remote_enabled, 'publicAddress': public_address}
+    if remote_enabled and config.strip():
+        managed_network.save_config(profile, config)
     folder = manager.absolute_profile_path(profile)
     update_properties(folder / 'server.properties', updates)
     manager.save_json(folder / 'profile.json', profile)
@@ -1460,7 +1499,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def handle_api_get(self, path: str, query: dict[str, list[str]]) -> None:
-        if path == "/api/state":
+        if path == "/api/session":
+            self.send_json(self.server.app_session.snapshot() if self.server.app_session else {"state": "open"})
+        elif path == "/api/session/events":
+            self.session_events(query.get("id", [""])[0])
+        elif path == "/api/state":
             self.send_json(dashboard_state())
         elif path == "/api/versions":
             self.send_json({"versions": cached_minecraft_versions()})
@@ -1474,6 +1517,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not lines:
                 lines = tail_lines(folder / "profile-runner.log")
             self.send_json({"lines": lines, "source": log_path.name})
+        elif path == "/api/proxy-log":
+            profile = profile_for_id(query.get("profile", [""])[0])
+            import managed_network
+            folder = managed_network.proxy_folder(profile)
+            lines = tail_lines(folder / "waterdog.log")
+            config = folder / 'config.yml'
+            if config.is_file():
+                for match in re.finditer(r'^\s+token:\s*[\'"]?([^\s\'"#]+)', config.read_text(encoding='utf-8'), re.M):
+                    lines = [line.replace(match.group(1), '[private token]') for line in lines]
+            self.send_json({'lines': lines})
         elif path == "/api/players":
             profile = profile_for_id(query.get("profile", [""])[0])
             self.send_json(player_status(profile, force=query.get("refresh", ["0"])[0] == "1"))
@@ -1501,6 +1554,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             values = list_backups(profile) if match.group(2) == "backups" else (list_addons(profile) if match.group(2) == "addons" else list_mods(profile))
             self.send_json({match.group(2): values})
 
+    def session_events(self, client_id: str) -> None:
+        session = self.server.app_session
+        if not session or not re.fullmatch(r"[a-f0-9-]{16,64}", client_id):
+            raise manager.ManagerError("Invalid dashboard session connection.")
+        if not self.valid_origin():
+            self.send_error_json(HTTPStatus.FORBIDDEN, "Invalid request origin.")
+            return
+        generation = session.tabs.connect(client_id)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.security_headers()
+            self.end_headers()
+            self.connection.settimeout(5)
+            while session.tabs.current(client_id, generation):
+                data = json.dumps(session.snapshot(), separators=(",", ":"))
+                self.wfile.write(f"data: {data}\n\n".encode())
+                self.wfile.flush()
+                if session.finished.wait(2):
+                    self.wfile.write(f"data: {json.dumps(session.snapshot())}\n\n".encode())
+                    self.wfile.flush()
+                    break
+        except (OSError, TimeoutError):
+            pass
+        finally:
+            session.tabs.disconnect(client_id, generation)
+            self.close_connection = True
+
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if not parsed.path.startswith("/api/") or not self.require_auth():
@@ -1515,7 +1598,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
 
     def handle_api_post(self, path: str, payload: dict) -> None:
-        if path == "/api/jobs/setup-playit":
+        lifecycle = getattr(getattr(self, "server", None), "app_session", None)
+        if lifecycle and lifecycle.closing.is_set() and path not in {"/api/shutdown", "/api/session/leave"}:
+            raise manager.ManagerError("BlockOps is saving and closing. Wait for shutdown to finish before reopening it.")
+        if path == "/api/session/leave":
+            if self.server.app_session:
+                self.server.app_session.tabs.disconnect(str(payload.get("id", "")))
+            self.send_json({"ok": True})
+        elif path == "/api/jobs/prepare-bedrock-network":
+            self.send_json(start_job("prepare networking", None, ["setup", "bedrock-network"]), HTTPStatus.ACCEPTED)
+        elif path == "/api/jobs/setup-playit":
             claim_code = str(payload.get("claimCode", "")).strip()
             if claim_code and not re.fullmatch(r"[A-Fa-f0-9]{10}", claim_code):
                 raise manager.ManagerError("Invalid Playit claim code.")
@@ -1588,8 +1680,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             self.send_json({"ok": True, "message": "Configuration saved. Restart the server if the mod requires it.", "file": saved})
         elif path == "/api/shutdown":
-            self.send_json({"ok": True})
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            if self.server.app_session:
+                self.server.app_session.request_shutdown()
+                self.send_json({"ok": True, "message": "Saving and stopping the server and its managed services…"}, HTTPStatus.ACCEPTED)
+            else:
+                self.send_json({"ok": True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
         else:
             match = re.fullmatch(r"/api/profiles/([^/]+)/(settings|backup-settings|open|backup|mods/toggle|addons/change)", path)
             if not match:
@@ -1731,9 +1827,10 @@ class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, handler, token: str):
+    def __init__(self, address, handler, token: str, *, scoped=False):
         super().__init__(address, handler)
         self.dashboard_token = token
+        self.app_session = app_session.AppSession(self, manager, public_job) if scoped else None
 
 
 def existing_dashboard() -> bool:
@@ -1756,6 +1853,7 @@ def launch_url(token: str) -> str:
 
 
 def main() -> int:
+    global app_lifecycle
     arguments = argparse.ArgumentParser(description="BlockOps local Minecraft dashboard")
     arguments.add_argument("--no-browser", action="store_true")
     args = arguments.parse_args()
@@ -1769,17 +1867,26 @@ def main() -> int:
         return 0
     token = secrets.token_urlsafe(32)
     persist_token(token)
-    server = DashboardServer((HOST, PORT), DashboardHandler, token)
+    server = DashboardServer((HOST, PORT), DashboardHandler, token, scoped=True)
+    app_lifecycle = server.app_session
+    app_lifecycle.start()
     url = launch_url(token)
     print(f"BlockOps is ready at http://{HOST}:{PORT}")
     if not args.no_browser:
         threading.Timer(0.35, lambda: webbrowser.open(url)).start()
+    previous_signals = {}
+    def request_close(signum, frame):
+        app_lifecycle.request_shutdown()
+    for name in ('SIGINT', 'SIGTERM'):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            previous_signals[signum] = signal.signal(signum, request_close)
     try:
         server.serve_forever(poll_interval=0.3)
-    except KeyboardInterrupt:
-        pass
     finally:
         server.server_close()
+        for signum, handler in previous_signals.items():
+            signal.signal(signum, handler)
     return 0
 
 

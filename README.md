@@ -1,6 +1,6 @@
 # BlockOps
 
-BlockOps is a local game-server manager for Windows and macOS. Its browser dashboard creates Minecraft Java (Vanilla, Fabric, and Forge), Minecraft Bedrock, and Palworld Dedicated Servers; safely starts and stops worlds; manages configuration; shows logs; makes scheduled backups; and connects Java/Palworld through playit.gg. Bedrock starts locally and has a separate, manual NetherNet/Playit connection guide.
+BlockOps is a local game-server manager for Windows and macOS. Its browser dashboard creates Minecraft Java (Vanilla, Fabric, and Forge), Minecraft Bedrock, and Palworld Dedicated Servers; safely starts and stops worlds; manages configuration; shows logs; makes scheduled backups; and connects Java/Palworld through playit.gg. Bedrock supports local play or a managed Playit/WaterdogPE connection after one-time tunnel setup.
 
 The dashboard is private to the computer (`127.0.0.1:8765`) and protected by a random local launch token. Worlds and account credentials are excluded from Git.
 
@@ -30,6 +30,23 @@ No system Python or Java installation is required. The first-run installer downl
 Setup is safe to run again. It reuses the private runtime and verifies the app before opening it. Developer tests are not required for installation, so a release copy without the `tests` folder still installs normally.
 
 Palworld has no native macOS dedicated-server build. On a Mac, BlockOps downloads the official Linux depot with Valve's native macOS SteamCMD and runs it in the open-source `thijsvanloef/palworld-server-docker` runtime. Install and start [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) before creating a Palworld profile. Apple Silicon Macs use the container's native ARM64/Box64 path; 16 GB is the recommended Palworld limit, and the runtime includes a clock-safety workaround needed by Palworld 1.0 under ARM emulation.
+
+## App lifetime and services
+
+Opening **BlockOps.app** starts only the local dashboard. It does not automatically start a server, Playit, WaterdogPE or Docker Desktop. Choose an instance and press **Start Server** to start the dependencies for that instance:
+
+| Instance mode | Started when you press Start Server |
+| --- | --- |
+| Minecraft Java | Its Java server and the configured BlockOps Playit agent |
+| Palworld | Its platform runtime and the configured BlockOps Playit agent |
+| Bedrock local | Docker Desktop if needed, and that instance's official BDS container |
+| Bedrock with Playit | Docker/BDS, a private foreground Playit daemon, and that instance's WaterdogPE proxy |
+
+**Stop Safely** stops the instance and its BlockOps-managed proxy/agent. **Quit BlockOps**, or closing/navigating away from the **last dashboard tab**, saves and stops the managed server, stops its services, and exits the dashboard. Tab closure has a 12-second grace period plus the time needed for a safe world save. Refreshing/reopening within that grace period cancels automatic closure. Other open dashboard tabs keep the session alive; background tabs do not depend on a throttled JavaScript heartbeat.
+
+Shutdown waits for operations already in progress and never force-kills a Java/Bedrock world because its save takes longer than expected. If safe shutdown fails, the dashboard remains available, reports the error and retries; reopen the app to inspect its status. Browser/process crashes and network disconnections can delay tab-close detection. Use **Quit BlockOps** for explicit shutdown.
+
+Ownership is recorded for the app's child processes and checked against their process start identity before session cleanup. Unrelated Playit installations, login services, manually started external servers and containers are not stopped by tab closure. **Docker Desktop stays open** because it is shared with other applications; the instance's container is stopped. Existing standalone CLI commands retain their detached lifetime, independent of browser tabs.
 
 ## Bedrock prerequisites (macOS and Windows)
 
@@ -74,13 +91,20 @@ For **local/LAN play**:
 
 For **direct Internet access**, advertise your public IPv4 and forward the selected TCP and UDP ports to the host's LAN IPv4. Keep Xbox authentication enabled, configure firewall access, and test from a different network. This IPv4 configuration does not implement an IPv6-only deployment. Public addressing may need different settings when switching back to LAN clients.
 
-### Connect remotely through Playit (manual)
+### Connect remotely through Playit (managed by BlockOps)
 
-Follow the current [official Playit NetherNet guide](https://playit.gg/support/minecraft-bedrock-nethernet/), including the tunnel's **Configuration help → WaterdogPE** settings. Upstream currently requires a Playit agent **1.1.0+**, **WaterdogPE**, and **Java 17+**, alongside BDS. Create **Minecraft Bedrock (NetherNet)**, including its experimental acknowledgement; an old **Minecraft Bedrock** UDP tunnel is insufficient.
+This is a one-time setup for each Bedrock instance. Afterward **Start Server** and **Stop Safely** handle the services; no separate Terminal windows are needed.
 
-Keep the proxy files separate from each server profile. Apply the guide's backend settings while stopped, using BlockOps **World Settings** for its TCP port (the guide uses **19142**) and **Config Files** for other properties. BlockOps controls `server-port`, `server-udp-ports`, `transport=nethernet`, and Docker's internal `server-ip=0.0.0.0`. Its **Host network access** must be **This computer / local proxy only** before disabling backend authentication as directed by the proxy guide. Copying a native server's `server-ip=127.0.0.1` literally into a container would break Docker forwarding.
+1. Stop the chosen instance and open **World Settings → Bedrock Connection Guide**.
+2. Click **Prepare Networking Tools**. BlockOps downloads WaterdogPE and installs its own foreground Playit daemon/client pair in `runtimes/playit-scoped`. On macOS, current upstream macOS packaging requires a one-time Rust build: install Rust from [rustup.rs](https://rustup.rs) and Apple's command-line developer tools if not already available. BlockOps downloads the pinned official `v2.0.0-r1` source, builds only `playit-cli` and `playitd`, and reuses the result on later starts. On Windows it downloads the signed official 1.2.0 CLI and daemon binaries. It never installs a Playit login/system service.
+3. Click **Connect Playit Account**. Follow the claim link and approve the BlockOps agent on Playit's site. The scoped daemon uses BlockOps's own credential file, IPC socket and PID files. Closing the app also stops an agent launched for account setup.
+4. Create **Minecraft Bedrock (NetherNet)** in [Playit Tunnels](https://playit.gg/account/tunnels), using that agent. Open **Configuration help → WaterdogPE**. Follow the [official guide](https://playit.gg/support/minecraft-bedrock-nethernet/); the older Bedrock/RakNet tunnel is insufficient. Keep Proxy Protocol at None as directed by Playit.
+5. Enable **Use Playit for this instance** in BlockOps. Enter the tunnel hostname and paste the complete WaterdogPE configuration into the private field. Its backend must use `address: 127.0.0.1:19142` with `server_type: bedrock` or `nethernet`; proxy `online_mode` must be `true`, NetherNet enabled with `nxs` signaling, and the NXS endpoint `https://nethernet.playit.gg`. Copy the actual tunnel token locally from Playit. Keep YAML indentation and merge each mapping only once. Do not put tokens in Git, screenshots or chat.
+6. Save. BlockOps moves the backend to loopback TCP/UDP 19142, disables its LAN discovery and delegates its authentication to WaterdogPE. Docker's internal bind address remains `0.0.0.0`; only the host's loopback interface publishes this backend, so users cannot bypass the authenticated proxy. Disabling the managed Playit mode re-enables backend authentication.
+7. Press **Start Server**. BlockOps starts Docker/BDS, starts its private Playit daemon, and launches the proxy using its managed Java runtime. It waits for WaterdogPE's signaling-registration acknowledgement. **Show Proxy Log** displays startup diagnostics with the stored token redacted. Registration is not proof of a successful player session.
+8. Players join the tunnel hostname on client port **19132**. Use this endpoint for local players too; the previous direct LAN entry may no longer work with the backend private. Test with a real Bedrock client outside your network.
 
-Configure WaterdogPE's backend and private tunnel token from Configuration help. Run WaterdogPE and the current agent separately and verify proxy registration. Players use the assigned tunnel address and the guide's client port (**19132**). BlockOps does not install/manage this proxy, update its existing Java/Palworld Playit agent, create this tunnel, or certify remote connectivity. Never publish proxy tokens in Git or chat.
+The per-instance proxy configuration, recovery copy and logs are stored under the profile's hidden `.blockops-network/waterdog/` folder. The blank configuration field keeps an already saved configuration; the API does not return its token in profile summaries. If account/tunnel configuration is missing, Start reports what to complete rather than pretending remote access works. BlockOps still requires you to create/authorize the tunnel in your own Playit account; it does not automate purchases or account approval.
 
 ## Install and manage Bedrock add-ons on a chosen instance
 
@@ -138,7 +162,7 @@ BlockOps uses only the Python standard library. With Python 3.10+ installed:
 python3 -m unittest discover -s tests -t . -v
 ```
 
-GitHub Actions runs the same tests on Windows and macOS for every push and pull request. Network access is required only for initial setup and first-time downloads of Minecraft, Java, loaders, and Playit.
+GitHub Actions runs the same tests on Windows and macOS for every push and pull request. Network access is required for setup/downloads and for the Playit agent during remote play.
 
 An optional real Docker integration test creates disposable profiles on unused high ports. It uses `BLOCKOPS_DATA_DIR` to isolate registry, state, Playit credentials and worlds from your normal installation. Do not point that variable at an existing profile directory:
 
@@ -150,5 +174,13 @@ BLOCKOPS_TEST_DOCKER=1 python3 -m unittest tests.test_bedrock.BedrockDockerInteg
 On Windows PowerShell, set `$env:BLOCKOPS_TEST_DOCKER="1"` first, run the same `python -m unittest ...` command, and remove the environment variable afterward. Docker Desktop must be running. The test downloads official BDS and verifies console commands, a persisted scoreboard across restarts, a loaded behavior-pack function, paired resource activation files, a runner-managed backup/restart, and restoration of world plus packs. It never uses the normal server registry, ports or Playit tunnel. The default suite skips this opt-in test.
 
 Validation on November 7, 2026 used Docker Desktop on Apple Silicon with amd64 emulation and official BDS **1.26.63.1**. This verifies more than container startup, but **does not verify a player login, UDP gameplay from another device, resource-pack rendering/download on a client, or a Playit/WaterdogPE tunnel**. Windows behavior is covered by portable/unit tests; no real Windows Docker or client run was available in this session.
+
+Lifecycle verification also includes real authenticated HTTP event streams: reload grace, multiple tabs and last-tab shutdown. Run the additional foreground-service test after preparing the tools:
+
+```sh
+BLOCKOPS_TEST_SERVICES=1 python3 -m unittest tests.test_app_session.RealServiceSessionTests -v
+```
+
+This uses an isolated, unclaimed Playit daemon plus a loopback WaterdogPE NetherNet listener, verifies IPC/HTTP readiness, then closes the session and checks that both processes exit. It neither creates a tunnel nor changes an OS-wide Playit service. `BLOCKOPS_TEST_DOCKER=1` also runs a session test that starts a disposable official Bedrock server through the dashboard and verifies that last-tab closure saves/stops the container and preserves LevelDB. A real remote tunnel/player login remains a separate test requiring the user's configured account and client.
 
 Downloads are obtained from the official Astral, Mojang, Fabric, Forge, Eclipse Adoptium, Azul, Valve SteamCMD, and `playit-cloud/playit-agent` endpoints. The macOS Palworld runtime image is built from the open-source `thijsvanloef/palworld-server-docker` project because Pocketpair does not publish a native macOS server binary.

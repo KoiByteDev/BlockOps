@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <div id="session-notice" class="backup-note" role="status" hidden></div>
   <div class="sky-glow" aria-hidden="true"></div>
   <div class="app-shell">
     <header class="topbar">
@@ -36,7 +37,7 @@
       </button>
       <div class="sidebar-foot">
         <div><span>PLAYIT TUNNEL</span><strong id="playit-status">OFFLINE</strong></div>
-        <button class="text-button" id="quit-dashboard">QUIT DASHBOARD</button>
+        <button class="text-button" id="quit-dashboard">QUIT BLOCKOPS</button>
       </div>
     </aside>
 
@@ -218,8 +219,16 @@
               <div class="field-row"><label>TCP signaling port<input name="port" type="number" min="1024" max="65535"></label><label>UDP gameplay port<input name="bedrockUdpPort" type="number" min="1024" max="65535"></label></div>
               <p>NetherNet uses TCP signaling and UDP gameplay. For LAN, choose LAN / Internet above, advertise this computer's LAN IPv4, allow the two ports through its firewall, then use Play → Servers → Add Server with that IPv4 and the TCP port. Docker LAN discovery may not work; add the server manually. 127.0.0.1 only supports a client on this computer. Windows clients on the same host may need the Minecraft app's loopback exemption. Console platforms may not offer Add Server.</p>
               <p>For direct Internet access, advertise your public IPv4 and forward both ports to this computer. Verify connectivity from a different network. Online status only confirms local readiness.</p>
-              <p>Playit is manual: use a current agent (upstream requires 1.1.0+), Java 17+, WaterdogPE and a <strong>Minecraft Bedrock (NetherNet)</strong> tunnel. The old UDP-only Bedrock tunnel is insufficient. Follow the tunnel's Configuration help and the <a href="https://playit.gg/support/minecraft-bedrock-nethernet/" target="_blank" rel="noopener">official Playit guide</a>. Keep WaterdogPE and the agent running separately. BlockOps does not install them for Bedrock or verify the remote tunnel.</p>
-              <p>If Configuration help moves BDS to port 19142, set the TCP port here to match. BlockOps owns the signaling port, UDP mapping and NetherNet transport; other backend properties can be edited in Config Files while stopped. If the guide requires online-mode=false, restrict access to the authenticated proxy; choose This computer / local proxy only for Host network access before disabling authentication. Keep the backend private. BlockOps binds BDS to 0.0.0.0 inside the isolated container so Docker forwarding works; use the host network access setting instead of copying server-ip=127.0.0.1 into the container.</p>
+              <label class="switch-row">Use Playit for this instance<input name="playitEnabled" type="checkbox"><i></i></label>
+              <p>Start Server launches this instance's services. Local mode uses Docker and Bedrock. Playit mode also launches a private Playit daemon and WaterdogPE; Stop Server shuts them down. Docker Desktop is shared with other apps and stays open.</p>
+              <div class="field-row"><button type="button" class="tiny-button" id="prepare-networking">PREPARE NETWORKING TOOLS</button><button type="button" class="tiny-button" id="connect-networking">CONNECT PLAYIT ACCOUNT</button></div>
+              <p>One-time setup: prepare the tools, connect the BlockOps agent, then create a <strong>Minecraft Bedrock (NetherNet)</strong> tunnel in <a href="https://playit.gg/account/tunnels" target="_blank" rel="noopener">Playit Tunnels</a>. Open Configuration help → WaterdogPE and paste its configuration below. The proxy must have online_mode: true, nxs signaling and the tunnel token. BlockOps manages the backend at 127.0.0.1:19142 (TCP and UDP), with its authentication delegated to the proxy.</p>
+              <label>Public Playit hostname<input name="playitHostname" placeholder="your-tunnel.tun.ply.gg" autocomplete="off"></label>
+              <label>WaterdogPE configuration (private)<textarea name="waterdogConfig" rows="9" autocomplete="off" spellcheck="false" placeholder="Paste the generated WaterdogPE YAML here. Backend address: 127.0.0.1:19142. Leave blank to keep a saved configuration."></textarea></label>
+              <p id="proxy-config-state">No proxy configuration saved.</p>
+              <button type="button" class="tiny-button" id="show-proxy-log">SHOW PROXY LOG</button>
+              <pre id="proxy-log" hidden></pre>
+              <p>Enabling Playit makes the backend private and reserves its port for the proxy. Paste the tunnel's token locally here; it is saved only in the instance's private files. You can continue using <a href="https://playit.gg/support/minecraft-bedrock-nethernet/" target="_blank" rel="noopener">Playit's official guide</a> for tunnel creation. Tool preparation may take several minutes the first time; macOS currently needs Rust and its command-line developer tools for the one-time Playit build.</p>
               <p>Backups briefly disconnect players: BlockOps saves and stops Bedrock, archives its LevelDB world plus installed behavior/resource packs, then restarts it. Add-on changes require a stopped instance. Keep your Bedrock clients and server versions compatible.</p>
             </article>
             <button class="mc-button primary save-settings" type="submit">SAVE WORLD SETTINGS</button>
@@ -321,7 +330,7 @@
           <label>Address players can reach<input name="bedrockAddress" value="127.0.0.1" placeholder="192.168.1.10"></label>
           <p>127.0.0.1 is for this computer only. For LAN play, enter this computer's LAN IPv4 address. NetherNet advertises this address for UDP gameplay.</p>
           <div class="field-row"><label>TCP signaling port<input name="port" type="number" min="1024" max="65535" value="19132"></label><label>UDP gameplay port<input name="bedrockUdpPort" type="number" min="1024" max="65535" value="19140"></label></div>
-          <p>First start downloads Mojang's official Bedrock Dedicated Server; subsequent starts keep that version and your files. Creating a server accepts the <a href="https://www.minecraft.net/eula" target="_blank" rel="noopener">Minecraft EULA</a>. Local start does not require Playit. Remote Playit requires manual NetherNet / WaterdogPE setup; see the connection guide in World Settings.</p>
+          <p>First start downloads Mojang's official Bedrock Dedicated Server; subsequent starts keep that version and your files. Creating a server accepts the <a href="https://www.minecraft.net/eula" target="_blank" rel="noopener">Minecraft EULA</a>. Local start does not require Playit. Configure Playit once in World Settings; BlockOps then starts and stops its agent and proxy with this instance.</p>
         </div>
         <div id="minecraft-create-options">
         <label>Minecraft version<input name="minecraftVersion" required list="version-list" placeholder="1.21.8"><datalist id="version-list"></datalist></label>
