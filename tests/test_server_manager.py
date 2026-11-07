@@ -192,6 +192,43 @@ class ServerManagerTests(unittest.TestCase):
                 command = manager.launch_command(profile)
             self.assertEqual(command, ["/java", "-XX:+UseG1GC", "-Xms2G", "-Xmx6G", "-jar", "server.jar", "nogui"])
 
+    def test_docker_on_path_takes_priority_over_finder_fallbacks(self):
+        with mock.patch.object(manager.shutil, "which", return_value="/chosen/docker"), \
+             mock.patch.object(manager, "docker_executable_candidates") as candidates:
+            self.assertEqual(manager.find_docker_executable(), "/chosen/docker")
+        candidates.assert_not_called()
+
+    def test_finder_fallback_used_for_engine_check_and_bedrock_inspection(self):
+        bundled = Path("/Applications/Docker.app/Contents/Resources/bin/docker")
+        with mock.patch.object(manager.shutil, "which", return_value=None), \
+             mock.patch.object(manager, "docker_executable_candidates", return_value=[bundled]), \
+             mock.patch.object(Path, "is_file", return_value=True), \
+             mock.patch.object(manager.os, "access", return_value=True), \
+             mock.patch.object(manager.subprocess, "run", side_effect=[
+                 mock.Mock(returncode=0, stdout="29.4.0", stderr=""),
+                 mock.Mock(returncode=1, stdout="", stderr="error: no such object"),
+             ]) as run:
+            self.assertEqual(manager.docker_executable(), bundled)
+            self.assertFalse(manager.bedrock_container_running({"id": "finder-test", "path": "/tmp/finder-test"}))
+        self.assertEqual([call.args[0][0] for call in run.call_args_list], [str(bundled), str(bundled)])
+
+    def test_docker_fallback_skips_missing_and_nonexecutable_files(self):
+        candidates = [Path("/missing/docker"), Path("/not-executable/docker"), Path("/working/docker")]
+        with mock.patch.object(manager.shutil, "which", return_value=None), \
+             mock.patch.object(manager, "docker_executable_candidates", return_value=candidates), \
+             mock.patch.object(Path, "is_file", side_effect=[False, True, True]), \
+             mock.patch.object(manager.os, "access", side_effect=[False, True]):
+            self.assertEqual(manager.find_docker_executable(), str(candidates[-1]))
+
+    def test_missing_docker_and_unavailable_engine_have_distinct_errors(self):
+        with mock.patch.object(manager, "find_docker_executable", return_value=None):
+            with self.assertRaisesRegex(manager.ManagerError, "Docker command could not be found"):
+                manager.docker_executable()
+        with mock.patch.object(manager, "find_docker_executable", return_value="/docker"), \
+             mock.patch.object(manager.subprocess, "run", return_value=mock.Mock(returncode=1, stdout="", stderr="Cannot connect")):
+            with self.assertRaisesRegex(manager.ManagerError, "installed but is not running or accessible"):
+                manager.docker_executable()
+
     def test_palworld_launch_command_uses_udp_game_port(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

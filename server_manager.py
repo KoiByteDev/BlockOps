@@ -459,12 +459,36 @@ def steamcmd_executable() -> Path:
     return executable
 
 
+def docker_executable_candidates() -> list[Path]:
+    """Known macOS Docker locations missing from Finder's minimal PATH."""
+    if not IS_MAC:
+        return []
+    return [
+        Path.home() / ".docker" / "bin" / "docker",
+        Path("/Applications/Docker.app/Contents/Resources/bin/docker"),
+        Path.home() / "Applications" / "Docker.app" / "Contents" / "Resources" / "bin" / "docker",
+        Path("/usr/local/bin/docker"),
+        Path("/opt/homebrew/bin/docker"),
+    ]
+
+
+def find_docker_executable() -> str | None:
+    """Resolve the CLI without changing PATH or depending on shell startup files."""
+    executable = shutil.which("docker")
+    if executable:
+        return executable
+    for candidate in docker_executable_candidates():
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def docker_executable() -> Path:
     """Return a working Docker CLI for a Linux dedicated-server runtime."""
-    executable = shutil.which("docker")
+    executable = find_docker_executable()
     if not executable:
         raise ManagerError(
-            "This server requires Docker Desktop running Linux containers. Install and start Docker Desktop, then retry."
+            "The Docker command could not be found. Install Docker Desktop, then reopen BlockOps and retry."
         )
     result = subprocess.run(
         [executable, "info", "--format", "{{.ServerVersion}}"],
@@ -727,7 +751,7 @@ def bedrock_launch_command(profile: dict) -> list[str]:
 
 
 def bedrock_container_running(profile: dict) -> bool:
-    executable = shutil.which("docker")
+    executable = find_docker_executable()
     if not executable:
         raise ManagerError("Docker is unavailable. Cannot establish whether this Bedrock instance is safely stopped.")
     try:
@@ -1030,7 +1054,7 @@ def palworld_game_port_bound(profile: dict) -> bool:
 def palworld_ready(profile: dict) -> bool:
     """Verify Palworld itself, rather than only Docker's host port proxy, is ready."""
     if IS_MAC and profile.get("palworldRuntime", "").startswith("docker-linux"):
-        docker = shutil.which("docker")
+        docker = find_docker_executable()
         if not docker:
             return False
         ports = (
@@ -1052,7 +1076,7 @@ def stop_palworld_runtime(profile: dict, timeout: int = 120) -> None:
     """Ask the macOS Palworld container to stop and flush before its runner exits."""
     if not (IS_MAC and profile.get("palworldRuntime", "").startswith("docker-linux")):
         return
-    docker = shutil.which("docker")
+    docker = find_docker_executable()
     if not docker:
         return
     subprocess.run(
