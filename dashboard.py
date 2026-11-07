@@ -748,6 +748,10 @@ def profile_summary(profile: dict, active_id: str | None) -> dict:
         "id": profile["id"],
         "name": profile["name"],
         "game": game,
+        "edition": "bedrock" if game == "bedrock" else "java",
+        "bedrockAddress": profile.get("bedrockAddress", "127.0.0.1"),
+        "bedrockBindAddress": profile.get("bedrockBindAddress", "0.0.0.0"),
+        "bedrockUdpPort": profile.get("bedrockUdpPort", 19140),
         "minecraftVersion": profile.get("minecraftVersion", ""),
         "loader": profile.get("loader", ""),
         "loaderVersion": profile.get("loaderVersion", ""),
@@ -755,21 +759,23 @@ def profile_summary(profile: dict, active_id: str | None) -> dict:
         "maximumRam": profile.get("maximumRam", "6G"),
         "port": int(profile.get("port", manager.DEFAULT_PORT)),
         "running": running,
-        "status": "online" if running and (game == "palworld" or manager.port_open(int(profile.get("port", manager.DEFAULT_PORT)))) else ("starting" if running else "offline"),
+        "status": "online" if running and (manager.bedrock_ready(profile) if game == "bedrock" else (game == "palworld" or manager.port_open(int(profile.get("port", manager.DEFAULT_PORT))))) else ("starting" if running else "offline"),
         "folderExists": folder.is_dir(),
         "path": str(folder),
         "modsCount": len(mods),
         "disabledModsCount": len(disabled),
         "backupsCount": len(backups),
         "properties": {
-            "motd": properties.get("motd", profile["name"]),
+            "motd": properties.get("server-name" if game == "bedrock" else "motd", profile["name"]),
             "gamemode": properties.get("gamemode", "survival"),
             "difficulty": properties.get("difficulty", "normal"),
             "maxPlayers": properties.get("max-players", "20"),
-            "whiteList": properties.get("white-list", "false") == "true",
+            "whiteList": properties.get("allow-list" if game == "bedrock" else "white-list", "false") == "true",
             "hardcore": properties.get("hardcore", "false") == "true",
             "onlineMode": properties.get("online-mode", "true") == "true",
             "pvp": properties.get("pvp", "true") == "true",
+            "allowCheats": properties.get("allow-cheats", "false") == "true",
+            "texturepackRequired": properties.get("texturepack-required", "false") == "true",
         },
         "jvmArguments": profile.get("jvmArguments", []),
         "backupSettings": manager.backup_settings(profile),
@@ -940,6 +946,14 @@ def read_config_file(profile: dict, root_id: str, relative: str) -> dict:
 
 
 def save_config_file(profile: dict, root_id: str, relative: str, content: str, expected_hash: str) -> dict:
+    if manager.profile_game(profile) == "bedrock":
+        with manager.manager_lock():
+            ensure_bedrock_mutable(profile)
+            return _save_config_file(profile, root_id, relative, content, expected_hash)
+    return _save_config_file(profile, root_id, relative, content, expected_hash)
+
+
+def _save_config_file(profile: dict, root_id: str, relative: str, content: str, expected_hash: str) -> dict:
     if len(content.encode("utf-8")) > MAX_EDITABLE_FILE:
         raise manager.ManagerError("Configuration files must remain smaller than 2 MB.")
     root = config_root_path(profile, root_id)
@@ -961,8 +975,90 @@ def save_config_file(profile: dict, root_id: str, relative: str, content: str, e
     return read_config_file(profile, root_id, relative)
 
 
+def ensure_bedrock_mutable(profile: dict) -> None:
+    if manager.profile_game(profile) != "bedrock":
+        raise manager.ManagerError("Select a Minecraft Bedrock instance to manage add-ons.")
+    if public_job().get("status") == "running":
+        raise manager.ManagerError("Wait for the current server operation to finish before editing Bedrock data.")
+    manager.assert_bedrock_stopped(profile)
+
+
+def list_addons(profile: dict) -> list[dict]:
+    if manager.profile_game(profile) != "bedrock":
+        raise manager.ManagerError("Add-ons are available only for Minecraft Bedrock instances.")
+    folder = manager.absolute_profile_path(profile)
+    return manager.bedrock.list_packs(folder, manager.world_path(folder))
+
+
+def receive_addon(profile: dict, stream, length: int, filename: str) -> list[dict]:
+    if Path(filename).name != filename or any(c in filename for c in "/\\") or not filename.lower().endswith((".mcpack", ".mcaddon")):
+        raise manager.ManagerError("Choose a Bedrock .mcpack or .mcaddon archive.")
+    if length <= 0 or length > manager.bedrock.MAX_ARCHIVE_BYTES:
+        raise manager.ManagerError("Add-on archives must be between 1 byte and 256 MB.")
+    folder = manager.absolute_profile_path(profile)
+    with tempfile.TemporaryDirectory(prefix=".blockops-upload-", dir=folder) as temporary:
+        archive = Path(temporary) / "upload.zip"
+        with archive.open("wb") as output:
+            remaining = length
+            while remaining:
+                chunk = stream.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise manager.ManagerError("The add-on upload ended unexpectedly.")
+                output.write(chunk)
+                remaining -= len(chunk)
+        return manager.bedrock.import_packs(folder, manager.world_path(folder), archive)
+
+
+def save_bedrock_settings(profile: dict, payload: dict) -> None:
+    name = str(payload.get("name", profile['name'])).strip()
+    maximum = str(payload.get("maximumRam", profile['maximumRam'])).upper()
+    if not name or len(name) > 80 or any(c in name for c in "\r\n"):
+        raise manager.ManagerError("Server name must contain 1–80 characters on one line.")
+    if not RAM_PATTERN.fullmatch(maximum):
+        raise manager.ManagerError("Maximum RAM must look like 4G or 4096M.")
+    port = int(payload.get('port', profile['port']))
+    udp = int(payload.get('bedrockUdpPort', profile.get('bedrockUdpPort', 19140)))
+    address = manager.validate_bedrock_network(str(payload.get('bedrockAddress', profile.get('bedrockAddress', '127.0.0.1'))), port, udp)
+    binding = payload.get('bedrockBindAddress', profile.get('bedrockBindAddress', '0.0.0.0'))
+    if binding not in {'0.0.0.0', '127.0.0.1'}:
+        raise manager.ManagerError('Choose loopback or all interfaces for the Docker binding.')
+    properties = payload.get('properties', {})
+    if not isinstance(properties, dict):
+        raise manager.ManagerError("Bedrock properties must be an object.")
+    updates = {}
+    for key, values in {'gamemode': {'survival', 'creative', 'adventure'}, 'difficulty': {'peaceful', 'easy', 'normal', 'hard'}}.items():
+        if key in properties:
+            if properties[key] not in values:
+                raise manager.ManagerError(f"Unsupported Bedrock {key}.")
+            updates[key] = properties[key]
+    if 'maxPlayers' in properties:
+        players = int(properties['maxPlayers'])
+        if not 1 <= players <= 1000:
+            raise manager.ManagerError("Choose 1–1000 maximum players.")
+        updates['max-players'] = str(players)
+    for key, prop in {'whiteList': 'allow-list', 'onlineMode': 'online-mode', 'allowCheats': 'allow-cheats', 'texturepackRequired': 'texturepack-required'}.items():
+        if key in properties:
+            if type(properties[key]) is not bool:
+                raise manager.ManagerError(f"{key} must be true or false.")
+            updates[prop] = str(properties[key]).lower()
+    motd = str(properties.get('motd', name)).replace('\r', ' ').replace('\n', ' ')[:250]
+    updates['server-name'] = motd
+    profile.update(name=name, maximumRam=maximum, port=port, bedrockUdpPort=udp, bedrockAddress=address, bedrockBindAddress=binding)
+    folder = manager.absolute_profile_path(profile)
+    update_properties(folder / 'server.properties', updates)
+    manager.save_json(folder / 'profile.json', profile)
+    data = manager.registry()
+    data['profiles'] = [profile if p['id'] == profile['id'] else p for p in data['profiles']]
+    manager.save_json(manager.REGISTRY, data)
+
+
 def save_profile_settings(profile_id: str, payload: dict) -> None:
     profile = profile_for_id(profile_id)
+    if manager.profile_game(profile) == "bedrock":
+        with manager.manager_lock():
+            ensure_bedrock_mutable(profile)
+            save_bedrock_settings(profile, payload)
+        return
     minimum = str(payload.get("minimumRam", profile.get("minimumRam", "2G"))).upper()
     maximum = str(payload.get("maximumRam", profile.get("maximumRam", "6G"))).upper()
     if not RAM_PATTERN.fullmatch(minimum) or not RAM_PATTERN.fullmatch(maximum):
@@ -1047,6 +1143,10 @@ def save_backup_settings(profile_id: str, payload: dict) -> dict:
 
 def create_offline_backup(profile: dict, *, label: str = "", prune: bool = True) -> str:
     folder = manager.absolute_profile_path(profile)
+    if manager.profile_game(profile) == "bedrock":
+        with manager.manager_lock():
+            manager.assert_bedrock_stopped(profile)
+            return manager.bedrock_offline_backup(profile, label=label, prune=prune).name
     world = manager.world_path(folder)
     if not world.is_dir():
         raise manager.ManagerError("This server does not have a world to back up yet.")
@@ -1090,6 +1190,10 @@ def validate_backup_archive(profile: dict, archive_path: Path) -> str:
     """Validate an archive and return the single top-level managed world folder."""
     roots: set[str] = set()
     palworld = manager.profile_game(profile) == "palworld"
+    is_bedrock = manager.profile_game(profile) == "bedrock"
+    db_roots = set()
+    pack_roots = set()
+    seen = set()
     expanded_bytes = 0
     try:
         with tarfile.open(archive_path, "r:gz") as archive:
@@ -1098,6 +1202,12 @@ def validate_backup_archive(profile: dict, archive_path: Path) -> str:
                 member_count += 1
                 if member_count > MAX_BACKUP_MEMBERS:
                     raise manager.ManagerError("The selected backup contains too many files.")
+                if is_bedrock:
+                    manager.bedrock.safe_path(Path("/archive"), member.name)
+                    key = member.name.rstrip("/").casefold()
+                    if key in seen or not (member.isfile() or member.isdir()):
+                        raise manager.ManagerError("Duplicate or unsupported Bedrock backup entry.")
+                    seen.add(key)
                 if "\\" in member.name:
                     raise manager.ManagerError("The selected backup contains an unsafe entry.")
                 relative = PurePosixPath(member.name)
@@ -1107,6 +1217,10 @@ def validate_backup_archive(profile: dict, archive_path: Path) -> str:
                 if expanded_bytes > MAX_BACKUP_EXPANDED:
                     raise manager.ManagerError("The selected backup expands beyond the 250 GB safety limit.")
                 clean_parts = tuple(part for part in relative.parts if part not in {"", "."})
+                if is_bedrock and len(clean_parts) > 2 and clean_parts[1] == "db" and member.isfile():
+                    db_roots.add(clean_parts[0])
+                if is_bedrock and len(clean_parts) == 3 and clean_parts[1] == manager.bedrock.SNAPSHOT_PACKS and clean_parts[2] in manager.bedrock.PACK_KINDS:
+                    pack_roots.add((clean_parts[0], clean_parts[2]))
                 if len(clean_parts) == 2 and clean_parts[1] == "level.dat" and member.isfile():
                     roots.add(clean_parts[0])
                 elif palworld and len(clean_parts) >= 2 and member.isfile() and clean_parts[-1].lower() == "level.sav":
@@ -1118,13 +1232,30 @@ def validate_backup_archive(profile: dict, archive_path: Path) -> str:
     if len(roots) != 1:
         marker = "Level.sav" if palworld else "level.dat"
         raise manager.ManagerError(f"The backup must contain exactly one world folder with {marker}.")
-    return next(iter(roots))
+    world_root = next(iter(roots))
+    if is_bedrock and (world_root not in db_roots or any((world_root, kind) not in pack_roots for kind in manager.bedrock.PACK_KINDS)):
+        raise manager.ManagerError("Choose a BlockOps Bedrock backup containing level.dat, LevelDB data and its pack snapshot. Java backups cannot be used.")
+    if is_bedrock and any(name.split("/")[0] != world_root.casefold() for name in seen):
+        raise manager.ManagerError("Bedrock backups must contain only one world and its pack snapshot.")
+    return world_root
 
 
 def apply_backup_archive(profile: dict, archive_path: Path) -> None:
     """Replace a stopped world's data with a validated archive, rolling back on failure."""
+    if manager.profile_game(profile) == "bedrock":
+        with manager.manager_lock():
+            manager.assert_bedrock_stopped(profile)
+            _apply_backup_archive(profile, archive_path)
+        return
+    _apply_backup_archive(profile, archive_path)
+
+
+def _apply_backup_archive(profile: dict, archive_path: Path) -> None:
     folder = manager.absolute_profile_path(profile)
+    if manager.profile_game(profile) == "bedrock":
+        manager.assert_bedrock_stopped(profile)
     world = manager.world_path(folder)
+    world.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".blockops-restore-", dir=folder))
     rollback = folder / f".blockops-restore-rollback-{time.time_ns()}"
     moved_original = False
@@ -1141,6 +1272,20 @@ def apply_backup_archive(profile: dict, archive_path: Path) -> None:
         valid = restored.is_dir() and (any(restored.rglob("Level.sav")) if manager.profile_game(profile) == "palworld" else (restored / "level.dat").is_file())
         if not valid:
             raise manager.ManagerError("The extracted backup does not contain a valid managed world.")
+        if manager.profile_game(profile) == "bedrock":
+            if not (restored / "db").is_dir():
+                raise manager.ManagerError("The Bedrock backup does not contain LevelDB data.")
+            replacements = []
+            for kind in manager.bedrock.PACK_KINDS:
+                source = restored / manager.bedrock.SNAPSHOT_PACKS / kind
+                prepared = staging / kind
+                source.replace(prepared)
+                replacements.append((manager.bedrock.safe_path(folder, kind), prepared))
+            (restored / manager.bedrock.SNAPSHOT_PACKS).rmdir()
+            manager.bedrock.list_packs(staging, restored)
+            replacements.append((world, restored))
+            manager.bedrock.replace_transaction(folder, replacements)
+            return
         if world.exists():
             world.replace(rollback)
             moved_original = True
@@ -1324,7 +1469,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/log":
             profile = profile_for_id(query.get("profile", [""])[0])
             folder = manager.absolute_profile_path(profile)
-            log_path = folder / "logs" / "latest.log"
+            log_path = folder / "profile-runner.log" if manager.profile_game(profile) == "bedrock" else folder / "logs" / "latest.log"
             lines = tail_lines(log_path)
             if not lines:
                 lines = tail_lines(folder / "profile-runner.log")
@@ -1348,12 +1493,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             profile = profile_for_id(query.get("profile", [""])[0])
             self.send_json(read_config_file(profile, query.get("root", ["config"])[0], query.get("path", [""])[0]))
         else:
-            match = re.fullmatch(r"/api/profiles/([^/]+)/(backups|mods)", path)
+            match = re.fullmatch(r"/api/profiles/([^/]+)/(backups|mods|addons)", path)
             if not match:
                 self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown API route.")
                 return
             profile = profile_for_id(match.group(1))
-            values = list_backups(profile) if match.group(2) == "backups" else list_mods(profile)
+            values = list_backups(profile) if match.group(2) == "backups" else (list_addons(profile) if match.group(2) == "addons" else list_mods(profile))
             self.send_json({match.group(2): values})
 
     def do_POST(self) -> None:
@@ -1386,18 +1531,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/jobs/stop":
             self.send_json(start_job("stop", manager.active_profile()["id"] if manager.active_profile() else None, ["stop", "instance"]), HTTPStatus.ACCEPTED)
         elif path == "/api/jobs/create":
-            if not manager.registry().get("profiles") and not setup_status()["canCreateServer"]:
+            if payload.get("game") != "bedrock" and payload.get("edition") != "bedrock" and not manager.registry().get("profiles") and not setup_status()["canCreateServer"]:
                 raise manager.ManagerError(
                     "Finish Playit setup before creating your first server. Open Setup Guide to continue."
                 )
             name = str(payload.get("name", "")).strip()
             game = str(payload.get("game", "minecraft")).strip().lower()
+            if game == "minecraft" and payload.get("edition", "java") == "bedrock":
+                game = "bedrock"
             version = str(payload.get("minecraftVersion", "")).strip()
             loader = str(payload.get("loader", "vanilla")).lower()
             loader_version = str(payload.get("loaderVersion", "")).strip()
             minimum = str(payload.get("minimumRam", "2G")).upper()
             maximum = str(payload.get("maximumRam", "6G")).upper()
-            if game not in {"minecraft", "palworld"}:
+            if game not in {"minecraft", "bedrock", "palworld"}:
                 raise manager.ManagerError("Choose Minecraft or Palworld.")
             if not name or (game == "minecraft" and (not version or loader not in {"vanilla", "fabric", "forge"})):
                 raise manager.ManagerError("Name, Minecraft version, and a valid loader are required.")
@@ -1406,6 +1553,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             args = ["create", "instance", "--name", name, "--game", game, "--min-ram", minimum, "--max-ram", maximum]
             if game == "minecraft":
                 args.extend(["--minecraft", version, "--loader", loader])
+            if game == "bedrock":
+                args.extend(["--bedrock-version", str(payload.get("bedrockVersion", "LATEST")),
+                             "--bedrock-address", str(payload.get("bedrockAddress", "127.0.0.1")),
+                             "--port", str(payload.get("port", manager.BEDROCK_PORT)),
+                             "--udp-port", str(payload.get("bedrockUdpPort", 19140))])
             if game == "minecraft" and loader_version:
                 args.extend(["--loader-version", loader_version])
             self.send_json(start_job("create", None, args), HTTPStatus.ACCEPTED)
@@ -1439,13 +1591,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
         else:
-            match = re.fullmatch(r"/api/profiles/([^/]+)/(settings|backup-settings|open|backup|mods/toggle)", path)
+            match = re.fullmatch(r"/api/profiles/([^/]+)/(settings|backup-settings|open|backup|mods/toggle|addons/change)", path)
             if not match:
                 self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown API route.")
                 return
             profile = profile_for_id(match.group(1))
             action = match.group(2)
-            if action == "settings":
+            if action == "addons/change":
+                with manager.manager_lock():
+                    ensure_bedrock_mutable(profile)
+                    manager.bedrock.change_pack(manager.absolute_profile_path(profile), manager.world_path(manager.absolute_profile_path(profile)), str(payload.get("id", "")), str(payload.get("action", "")))
+                self.send_json({"ok": True, "message": "Add-on updated for this instance. Start the server and check its content logs."})
+            elif action == "settings":
                 save_profile_settings(profile["id"], payload)
                 self.send_json({"ok": True, "message": "Server settings saved. Restart to apply them."})
             elif action == "backup-settings":
@@ -1462,11 +1619,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     control.mkdir(exist_ok=True)
                     request = control / "backup.request"
                     request.write_text("dashboard\n", encoding="utf-8")
-                    self.send_json({"ok": True, "message": "Backup queued. The server will flush the world first."})
+                    self.send_json({"ok": True, "message": "Backup queued. Bedrock saves, stops and restarts for a consistent snapshot; players will disconnect." if manager.profile_game(profile) == "bedrock" else "Backup queued. The server will flush the world first."})
                 else:
                     name = create_offline_backup(profile)
                     self.send_json({"ok": True, "message": f"Created {name}."})
             elif action == "mods/toggle":
+                if manager.profile_game(profile) != "minecraft":
+                    raise manager.ManagerError("Java mods are supported only on Minecraft Java instances.")
                 mods = manager.absolute_profile_path(profile) / "mods"
                 name = str(payload.get("name", ""))
                 source = safe_config_path(mods, name)
@@ -1495,6 +1654,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except (manager.ManagerError, OSError, ValueError) as error:
                 self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
             return
+        addon_match = re.fullmatch(r"/api/profiles/([^/]+)/addons/([^/]+)", parsed.path)
+        if addon_match:
+            try:
+                profile = profile_for_id(addon_match.group(1))
+                with manager.manager_lock():
+                    ensure_bedrock_mutable(profile)
+                    packs = receive_addon(profile, self.rfile, int(self.headers.get("Content-Length", "0")), urllib.parse.unquote(addon_match.group(2)))
+                self.send_json({"ok": True, "packs": packs, "message": "Imported inactive packs. Choose Enable to activate them for this world."})
+            except (manager.ManagerError, OSError, ValueError) as error:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+            return
         mod_match = re.fullmatch(r"/api/profiles/([^/]+)/mods/([^/]+)", parsed.path)
         backup_match = re.fullmatch(r"/api/profiles/([^/]+)/backups/([^/]+)", parsed.path)
         match = mod_match or backup_match
@@ -1509,6 +1679,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 raise manager.ManagerError("Invalid upload filename.")
             length = int(self.headers.get("Content-Length", "0"))
             if mod_match:
+                if manager.profile_game(profile) != "minecraft":
+                    raise manager.ManagerError("Java .jar mods are incompatible with Bedrock and Palworld.")
                 if not name.lower().endswith(".jar"):
                     raise manager.ManagerError("Only .jar mod files are accepted.")
                 if length <= 0 or length > MAX_MOD_UPLOAD:

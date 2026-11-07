@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import ipaddress
 import os
 import platform
 import re
@@ -24,6 +25,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+import bedrock_support as bedrock
+
 if os.name == "nt":
     import msvcrt
 else:
@@ -31,24 +34,27 @@ else:
     import fcntl
 
 ROOT = Path(__file__).resolve().parent
-REGISTRY = ROOT / "server-profiles.json"
+DATA_ROOT = Path(os.environ.get("BLOCKOPS_DATA_DIR", str(ROOT))).expanduser().resolve()
+REGISTRY = DATA_ROOT / "server-profiles.json"
 EXAMPLE_REGISTRY = ROOT / "server-profiles.example.json"
-PROFILES = ROOT / "profiles"
+PROFILES = DATA_ROOT / "profiles"
 CACHE = ROOT / "install-cache"
 RUNTIMES = ROOT / "runtimes" / "java"
-STATE = ROOT / ".manager-state"
+STATE = DATA_ROOT / ".manager-state"
 MANAGER_LOCK = STATE / "manager.lock"
 SERVER_PID = STATE / "server.pid"
 PLAYIT_PID = STATE / "playit.pid"
 PLAYIT_LOG = STATE / "playit.log"
 PLAYIT_INVALID = STATE / "playit.invalid"
-PLAYIT_CONFIG = ROOT / "playit.toml"
+PLAYIT_CONFIG = DATA_ROOT / "playit.toml"
 PLAYIT_SOCKET = STATE / "playit.sock"
 PLAYIT_CLAIM_CODE = STATE / "playit-claim-code"
 PLAYIT_PORTABLE_URL = (
     "https://github.com/playit-cloud/playit-agent/releases/download/"
     "v0.17.1/playit-windows-x86_64-signed.exe"
 )
+BEDROCK_PORT = 19132
+BEDROCK_DOCKER_IMAGE = "itzg/minecraft-bedrock-server@sha256:0d8799379a492bd636037587298fa8a77ee409264fd77a3c68dba55104dbcca0"
 DEFAULT_PORT = 25565
 PALWORLD_PORT = 8211
 PALWORLD_QUERY_PORT = 27016
@@ -74,8 +80,7 @@ PLAYER_LIST_PATTERNS = (
 )
 
 
-class ManagerError(RuntimeError):
-    pass
+ManagerError = bedrock.BedrockError
 
 
 def detached_process_options() -> dict:
@@ -191,7 +196,7 @@ def profile_by_id(profile_id: str | None, *, prompt: bool = False) -> dict:
         names = ", ".join(p["id"] for p in profiles)
         raise ManagerError(f"Choose a profile with --profile. Available: {names}")
     for number, item in enumerate(profiles, 1):
-        label = "Palworld" if profile_game(item) == "palworld" else f"{item['minecraftVersion']} {item['loader']}"
+        label = "Palworld" if profile_game(item) == "palworld" else f"{item.get('minecraftVersion', 'Bedrock')} {item.get('loader', '')}"
         print(f"[{number}] {item['name']} ({label})")
     try:
         return profiles[int(input("Profile: ").strip()) - 1]
@@ -206,7 +211,7 @@ def slug(text: str) -> str:
 def profile_game(profile: dict) -> str:
     """Return the supported game type, keeping profiles made before game types Minecraft."""
     game = str(profile.get("game", "minecraft")).lower()
-    if game not in {"minecraft", "palworld"}:
+    if game not in {"minecraft", "bedrock", "palworld"}:
         raise ManagerError(f"Unsupported game type in profile: {game}")
     return game
 
@@ -455,11 +460,11 @@ def steamcmd_executable() -> Path:
 
 
 def docker_executable() -> Path:
-    """Return a working Docker CLI for the macOS Palworld Linux runtime."""
+    """Return a working Docker CLI for a Linux dedicated-server runtime."""
     executable = shutil.which("docker")
     if not executable:
         raise ManagerError(
-            "Palworld on macOS requires Docker Desktop. Install and start Docker Desktop, then retry."
+            "This server requires Docker Desktop running Linux containers. Install and start Docker Desktop, then retry."
         )
     result = subprocess.run(
         [executable, "info", "--format", "{{.ServerVersion}}"],
@@ -632,7 +637,268 @@ def make_palworld_profile(args) -> dict:
         raise
 
 
+def bedrock_container_name(profile: dict) -> str:
+    identity = hashlib.sha256(str(absolute_profile_path(profile)).encode()).hexdigest()[:12]
+    return f"blockops-bedrock-{slug(profile['id'])[:30]}-{identity}"
+
+
+def validate_bedrock_network(address: str, port: int, udp_port: int) -> str:
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        raise ManagerError("Bedrock advertised address must be an IPv4 address reachable by your players.") from None
+    if parsed.version != 4 or parsed.is_unspecified or parsed.is_multicast:
+        raise ManagerError("Use a specific IPv4 host address for Bedrock networking.")
+    if not 1024 <= port <= 65535 or not 1024 <= udp_port <= 65535:
+        raise ManagerError("Bedrock ports must be between 1024 and 65535.")
+    return str(parsed)
+
+
+def make_bedrock_profile(args) -> dict:
+    docker_executable()
+    name = args.name or input("Profile name: ").strip()
+    profile_id = args.id or slug(name)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", profile_id or ""):
+        raise ManagerError("Use letters, digits and hyphens for the instance ID (at most 80 characters).")
+    maximum = args.max_ram or "4G"
+    if not re.fullmatch(r"[1-9][0-9]*[MG]", maximum, re.IGNORECASE):
+        raise ManagerError("RAM values must look like 2G or 4096M.")
+    address = validate_bedrock_network(args.bedrock_address, args.port, args.udp_port)
+    requested_version = args.bedrock_version
+    if requested_version != "LATEST" and not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", requested_version):
+        raise ManagerError("Use LATEST or an exact Bedrock Dedicated Server version, such as 1.26.52.3.")
+    data = registry()
+    if any(p["id"] == profile_id for p in data["profiles"]):
+        raise ManagerError(f"A profile named {profile_id} already exists.")
+    folder = Path(args.path).expanduser().resolve() if args.path else PROFILES / profile_id
+    if folder.exists() and any(folder.iterdir()):
+        raise ManagerError(f"Profile folder is not empty: {folder}")
+    folder.mkdir(parents=True, exist_ok=True)
+    profile = {
+        "id": profile_id, "name": name, "game": "bedrock", "edition": "bedrock",
+        "path": str(folder.relative_to(ROOT) if folder.is_relative_to(ROOT) else folder),
+        "minecraftVersion": requested_version, "loader": "bedrock", "bedrockVersion": requested_version,
+        "minimumRam": "1G", "maximumRam": maximum.upper(),
+        "port": args.port, "bedrockUdpPort": args.udp_port, "bedrockAddress": address,
+        "bedrockBindAddress": args.bedrock_bind or ("127.0.0.1" if address == "127.0.0.1" else "0.0.0.0"),
+        "backupSettings": new_profile_backup_settings(),
+    }
+    # BDS itself is downloaded from Mojang at the first Docker start. Later starts
+    # use the existing binary, preventing an unattended world format upgrade.
+    (folder / "server.properties").write_text(
+        "server-name=" + name.replace("\r", " ").replace("\n", " ") +
+        "\nlevel-name=Bedrock level\ngamemode=survival\ndifficulty=normal\nmax-players=10\n"
+        "online-mode=true\nallow-list=false\nallow-cheats=false\ntexturepack-required=false\n"
+        "transport=nethernet\ncontent-log-file-enabled=true\ncontent-log-console-output-enabled=true\n",
+        encoding="utf-8",
+    )
+    for child in (*bedrock.PACK_KINDS, "worlds", "backups"):
+        (folder / child).mkdir(exist_ok=True)
+    save_json(folder / "profile.json", profile)
+    data["schemaVersion"] = 4
+    data["profiles"].append(profile)
+    save_json(REGISTRY, data)
+    print(f"Created {name}: Minecraft Bedrock, Docker linux/amd64. The first start downloads the official server (EULA accepted).")
+    print("Apple Silicon uses amd64 emulation; enable Rosetta in Docker Desktop's Apple Virtualization Framework settings.")
+    print(f"Advertised address: {address}; TCP {args.port}, UDP {args.udp_port}. Remote Playit/WaterdogPE setup is manual; see README.")
+    return profile
+
+
+def bedrock_launch_command(profile: dict) -> list[str]:
+    folder = absolute_profile_path(profile)
+    port, udp = int(profile.get("port", BEDROCK_PORT)), int(profile.get("bedrockUdpPort", 19140))
+    address = validate_bedrock_network(profile.get("bedrockAddress", "127.0.0.1"), port, udp)
+    binding = profile.get("bedrockBindAddress", "0.0.0.0")
+    if binding not in {"0.0.0.0", "127.0.0.1"}:
+        raise ManagerError("Choose a loopback or all-interfaces Docker binding.")
+    # Preserve installed BDS across restarts. No Java/Box64 server substitution.
+    existing = (folder / "bedrock_server").is_file() or any(folder.glob("bedrock_server-[0-9]*"))
+    version = "EXISTING" if existing else profile.get("bedrockVersion", "LATEST")
+    world = world_path(folder)  # Reject unsafe level-name before mounting writable data.
+    return [str(docker_executable()), "run", "--rm", "--interactive", "--platform", "linux/amd64",
+            "--name", bedrock_container_name(profile), "--label", "app=blockops-bedrock",
+            "--memory", str(profile.get("maximumRam", "4G")).lower(),
+            "--publish", f"{binding}:{port}:{port}/tcp", "--publish", f"{binding}:{udp}:{udp}/udp",
+            "--volume", f"{folder.resolve()}:/data", "--env", "EULA=TRUE",
+            "--env", f"VERSION={version}", "--env", f"SERVER_PORT={port}",
+            "--env", f"SERVER_UDP_PORTS={address}:{udp}:{udp}", "--env", "TRANSPORT=nethernet",
+            "--env", f"LEVEL_NAME={world.name}", "--env", "SERVER_IP=0.0.0.0",
+            BEDROCK_DOCKER_IMAGE]
+
+
+def bedrock_container_running(profile: dict) -> bool:
+    executable = shutil.which("docker")
+    if not executable:
+        raise ManagerError("Docker is unavailable. Cannot establish whether this Bedrock instance is safely stopped.")
+    try:
+        result = subprocess.run([executable, "inspect", "--format", "{{.State.Running}}", bedrock_container_name(profile)],
+                                capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ManagerError(f"Cannot inspect the Bedrock container: {error}") from error
+    if result.returncode:
+        if "no such" in result.stderr.lower():
+            return False
+        raise ManagerError("Cannot inspect the Bedrock container. Start Docker Desktop before modifying this instance.")
+    return result.stdout.strip() == "true"
+
+
+def bedrock_ready(profile: dict) -> bool:
+    # A listening Docker proxy alone is not evidence of BDS readiness.
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{int(profile['port'])}/v1/join", timeout=1) as response:
+            info = json.load(response)
+        return isinstance(info, dict) and bool(info.get("version"))
+    except (OSError, ValueError):
+        return False
+
+
+def bedrock_command(profile: dict, command: str) -> None:
+    if not command.strip() or any(c in command for c in "\r\n\x00"):
+        raise ManagerError("Enter one Bedrock console command at a time.")
+    # send-command from the upstream image searches /proc/*/exe, which points
+    # at Rosetta rather than BDS under Apple Silicon emulation. Match the kernel
+    # process name instead, passing console text as an argument (never shell code).
+    script = """for process in /proc/[0-9]*; do
+      name=$(cat "$process/comm" 2>/dev/null) || continue
+      case "$name" in bedrock_server*)
+        [ "$(readlink "$process/cwd")" = /data ] || continue
+        printf '%s\\n' "$1" > "$process/fd/0" && exit 0
+      esac
+    done
+    echo 'Bedrock console is not ready' >&2
+    exit 2"""
+    try:
+        result = subprocess.run([str(docker_executable()), "exec", bedrock_container_name(profile),
+                                 "/bin/sh", "-c", script, "blockops-console", command.strip().lstrip("/")],
+                                capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ManagerError(f"Bedrock console is unavailable: {error}") from error
+    if result.returncode:
+        raise ManagerError(f"Bedrock console command failed: {(result.stderr or result.stdout).strip()}")
+
+
+
+def assert_bedrock_stopped(profile: dict) -> None:
+    active = active_profile()
+    if (active and active['id'] == profile['id']) or bedrock_container_running(profile):
+        raise ManagerError("Stop this Bedrock instance before importing, activating, removing packs or editing its files.")
+
+
+def bedrock_offline_backup(profile: dict, *, label="", prune=True) -> Path:
+    folder = absolute_profile_path(profile)
+    if bedrock_container_running(profile):
+        raise ManagerError("A Bedrock backup requires the container to finish saving and stop first.")
+    world = world_path(folder)
+    if not (world / "level.dat").is_file() or not (world / "db").is_dir():
+        raise ManagerError("No Bedrock LevelDB world exists yet. Start and stop this instance first.")
+    settings = backup_settings(profile)
+    backups = folder / "backups"
+    backups.mkdir(exist_ok=True)
+    destination = backups / f"{world.name}-{label + '-' if label else ''}{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns()}.tar.gz"
+    temporary = destination.with_suffix(".part")
+    try:
+        with tarfile.open(temporary, "w:gz", compresslevel=settings['compressionLevel']) as archive:
+            def no_links(member):
+                if member.issym() or member.islnk() or member.isdev():
+                    raise ManagerError("Bedrock backups cannot contain symbolic links or special files.")
+                return member
+            archive.add(world, arcname=world.name, filter=no_links)
+            for kind in bedrock.PACK_KINDS:
+                root = bedrock.safe_path(folder, kind)
+                if root.exists():
+                    archive.add(root, arcname=f"{world.name}/{bedrock.SNAPSHOT_PACKS}/{kind}", filter=no_links)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    if prune:
+        completed = sorted(backups.glob(f"{world.name}-*.tar.gz"), key=lambda p: p.stat().st_mtime)
+        for expired in completed[:-settings['retention']]:
+            expired.unlink(missing_ok=True)
+    return destination
+
+
+def bedrock_runner(profile: dict, folder: Path) -> None:
+    """Attached Docker lifecycle; backups restart only after an acknowledged clean exit."""
+    control = folder / ".control"
+    settings = backup_settings(profile)
+    log = folder / "profile-runner.log"
+    deadline = time.monotonic() + settings['intervalMinutes'] * 60
+    process = None
+    try:
+        while True:
+            # A timeout/stop during a slow Docker pull must survive until BDS starts.
+            if (control / "stop.request").exists():
+                return
+            with log.open("ab", buffering=0) as output:
+                process = subprocess.Popen(bedrock_launch_command(profile), cwd=folder,
+                                           stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT)
+                SERVER_PID.write_text(str(process.pid))
+                restart = False
+                while process.poll() is None:
+                    stop = (control / "stop.request").exists()
+                    manual = (control / "backup.request").exists()
+                    scheduled = settings['enabled'] and time.monotonic() >= deadline
+                    if scheduled and settings['onlyWhenEmpty'] and not stop and not manual:
+                        # BDS console logs are the acknowledgement channel for list.
+                        offset = log.stat().st_size
+                        bedrock_command(profile, "list")
+                        time.sleep(1)
+                        with log.open('rb') as reader:
+                            reader.seek(offset)
+                            text = reader.read().decode('utf-8', errors='replace')
+                        counts = [m for pattern in PLAYER_LIST_PATTERNS for m in pattern.finditer(text)]
+                        if not counts or int(counts[-1].group(1)) > 0:
+                            deadline = time.monotonic() + 60
+                            scheduled = False
+                    if stop or manual or scheduled:
+                        # send-command stop saves BDS. Never docker stop/kill on a save timeout.
+                        try:
+                            bedrock_command(profile, "stop")
+                        except ManagerError:
+                            # Docker may still be downloading BDS. Keep the stop
+                            # request pending until the console becomes available.
+                            time.sleep(1)
+                            continue
+                        try:
+                            process.wait(timeout=120)
+                        except subprocess.TimeoutExpired:
+                            raise ManagerError("Bedrock has not finished saving. Container left untouched; inspect its logs.")
+                        if process.returncode != 0 or bedrock_container_running(profile):
+                            raise ManagerError("Bedrock did not exit cleanly; snapshot and restart cancelled.")
+                        if manual or scheduled or (stop and settings['backupOnStop']):
+                            try:
+                                backup = bedrock_offline_backup(profile)
+                                output.write(f"Bedrock backup created: {backup.name}\n".encode())
+                            except (ManagerError, OSError, tarfile.TarError) as error:
+                                output.write(f"Bedrock backup failed: {error}\n".encode())
+                        (control / "backup.request").unlink(missing_ok=True)
+                        if stop:
+                            (control / "stop.request").unlink(missing_ok=True)
+                            return
+                        deadline = time.monotonic() + settings['intervalMinutes'] * 60
+                        restart = True
+                        break
+                    request = control / "command.request"
+                    if request.exists():
+                        commands = request.read_text(encoding='utf-8').splitlines()
+                        request.unlink()
+                        for command in commands:
+                            try:
+                                bedrock_command(profile, command)
+                            except (ManagerError, OSError, subprocess.SubprocessError) as error:
+                                output.write(f"Console error: {error}\n".encode())
+                    time.sleep(0.25)
+                if not restart:
+                    output.write(b"Bedrock exited; leaving the instance stopped.\n")
+                    return
+    finally:
+        if process is None or process.poll() is not None:
+            SERVER_PID.unlink(missing_ok=True)
+
+
 def make_profile(args) -> dict:
+    if getattr(args, "game", "minecraft") == "bedrock" or (getattr(args, "game", "minecraft") == "minecraft" and getattr(args, "edition", "java") == "bedrock"):
+        return make_bedrock_profile(args)
     if getattr(args, "game", "minecraft") == "palworld":
         args.min_ram = args.min_ram or "4G"
         args.max_ram = args.max_ram or "16G"
@@ -728,6 +994,15 @@ def game_port_in_use(profile: dict) -> bool:
     port = int(profile.get("port", DEFAULT_PORT))
     if profile_game(profile) == "minecraft":
         return port_open(port)
+    if profile_game(profile) == "bedrock":
+        if port_open(port):
+            return True
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", int(profile.get("bedrockUdpPort", 19140))))
+            except OSError:
+                return True
+        return False
     query_port = int(profile.get("queryPort", PALWORLD_QUERY_PORT))
 
     def udp_port_bound(candidate: int) -> bool:
@@ -1206,6 +1481,8 @@ def stop_process(pid_path: Path, timeout: int = 15) -> None:
 
 def launch_command(profile: dict) -> list[str]:
     folder = absolute_profile_path(profile)
+    if profile_game(profile) == "bedrock":
+        return bedrock_launch_command(profile)
     if profile_game(profile) == "palworld":
         if IS_MAC and profile.get("palworldRuntime", "").startswith("docker-linux"):
             executable = folder / profile.get("launchExecutable", "PalServer.sh")
@@ -1264,14 +1541,21 @@ def world_path(folder: Path) -> Path:
             world = (folder / "Pal" / "Saved" / "SaveGames").resolve()
             if world.is_relative_to(folder.resolve()):
                 return world
-    level_name = "world"
+    is_bedrock = False
+    with contextlib.suppress(OSError, ValueError):
+        is_bedrock = profile_game(load_json(folder / "profile.json")) == "bedrock"
+    level_name = "Bedrock level" if is_bedrock else "world"
     properties = folder / "server.properties"
     if properties.exists():
         for line in properties.read_text(encoding="utf-8", errors="replace").splitlines():
             if line.startswith("level-name="):
                 level_name = line.partition("=")[2].strip() or "world"
                 break
-    world = (folder / level_name).resolve()
+    if is_bedrock and (level_name in {".", ".."} or any(c in level_name for c in "/\\:")):
+        raise ManagerError("Bedrock level-name must be a single world folder name.")
+    if is_bedrock:
+        bedrock.safe_path(folder, f"worlds/{level_name}")
+    world = ((folder / "worlds" / level_name) if is_bedrock else (folder / level_name)).resolve()
     if not world.is_relative_to(folder.resolve()):
         raise ManagerError(f"Unsafe level-name in {properties}: {level_name}")
     return world
@@ -1343,10 +1627,14 @@ def runner_mode(profile_path: str) -> None:
     folder = Path(profile_path)
     control = folder / ".control"
     control.mkdir(exist_ok=True)
-    (control / "stop.request").unlink(missing_ok=True)
+    if profile_game(profile) != "bedrock":
+        (control / "stop.request").unlink(missing_ok=True)
     log_path = folder / "profile-runner.log"
     settings = backup_settings(profile)
     game = profile_game(profile)
+    if game == "bedrock":
+        bedrock_runner(profile, folder)
+        return
     while True:
         with log_path.open("a", encoding="utf-8") as runner_log:
             runner_log.write(f"{time.strftime('%F %T')} starting {profile['name']}\n")
@@ -1445,17 +1733,27 @@ def start_profile(profile: dict, timeout: int) -> None:
     folder = absolute_profile_path(profile)
     if not folder.exists():
         raise ManagerError(f"Profile folder is missing: {folder}")
+    if profile_game(profile) == "bedrock" and bedrock_container_running(profile):
+        raise ManagerError("This Bedrock container is already running. Stop it safely before starting a second runner.")
     STATE.mkdir(parents=True, exist_ok=True)
-    try:
-        playit_pid, playit_log_offset = start_playit()
-        ensure_playit_enabled(playit_pid, playit_log_offset, profile=profile)
-    except Exception:
-        stop_process(PLAYIT_PID)
-        raise
+    if active_profile():
+        raise ManagerError("Stop the active instance before starting another server.")
+    if profile_game(profile) != "bedrock":
+        try:
+            playit_pid, playit_log_offset = start_playit()
+            ensure_playit_enabled(playit_pid, playit_log_offset, profile=profile)
+        except Exception:
+            stop_process(PLAYIT_PID)
+            raise
+    if profile_game(profile) == "bedrock":
+        control = folder / ".control"
+        control.mkdir(exist_ok=True)
+        for stale in ("stop.request", "backup.request", "command.request"):
+            (control / stale).unlink(missing_ok=True)
     # Only launch the server after Playit has been claimed and enabled. This
     # prevents Start instance from silently creating a localhost-only server.
-    runner_log = (folder / "profile-runner.log").open("ab", buffering=0)
-    process = subprocess.Popen([sys.executable, __file__, "_run", str(folder)], cwd=folder, stdin=subprocess.DEVNULL, stdout=runner_log, stderr=subprocess.STDOUT, **detached_process_options())
+    with (folder / "profile-runner.log").open("ab", buffering=0) as runner_log:
+        process = subprocess.Popen([sys.executable, __file__, "_run", str(folder)], cwd=folder, stdin=subprocess.DEVNULL, stdout=runner_log, stderr=subprocess.STDOUT, **detached_process_options())
     (STATE / "runner.pid").write_text(str(process.pid))
     latest = folder / "logs" / "latest.log"
     deadline = time.time() + timeout
@@ -1465,6 +1763,9 @@ def start_profile(profile: dict, timeout: int) -> None:
         while time.time() < deadline:
             if process.poll() is not None:
                 raise ManagerError(f"Server runner exited. Review {folder / 'profile-runner.log'}")
+            if profile_game(profile) == "bedrock" and bedrock_ready(profile):
+                print(f"{profile['name']} is ready locally. Player connections and remote networking need separate verification.")
+                return
             if profile_game(profile) == "minecraft" and port_open(port):
                 print(f"{profile['name']} is online through the configured playit.gg public address.")
                 return
@@ -1483,6 +1784,12 @@ def start_profile(profile: dict, timeout: int) -> None:
     except Exception:
         # Never leave a detached runner alive when startup fails. An orphaned
         # runner would let a later Start action launch a second game process.
+        if profile_game(profile) == "bedrock":
+            # Never kill a potentially saving BDS container on startup timeout.
+            control = folder / ".control"
+            control.mkdir(exist_ok=True)
+            (control / "stop.request").write_text("startup failed\n")
+            raise ManagerError(f"Bedrock startup failed or timed out. A safe stop was requested; inspect {folder / 'profile-runner.log'} before retrying.")
         if profile_game(profile) == "palworld":
             with contextlib.suppress(OSError, subprocess.SubprocessError):
                 stop_palworld_runtime(profile, timeout=30)
@@ -1502,9 +1809,15 @@ def start_profile(profile: dict, timeout: int) -> None:
 
 def active_profile() -> dict | None:
     active = STATE / "active-profile"
-    if active.exists() and read_pid(STATE / "runner.pid"):
-        with contextlib.suppress(ManagerError):
-            return profile_by_id(active.read_text().strip())
+    if active.exists():
+        with contextlib.suppress(ManagerError, OSError, subprocess.SubprocessError):
+            profile = profile_by_id(active.read_text().strip())
+            if read_pid(STATE / "runner.pid"):
+                return profile
+            # Keep Stop available after an attached Docker client/runner exits
+            # unexpectedly while the persistent BDS container is still alive.
+            if profile_game(profile) == "bedrock" and bedrock_container_running(profile):
+                return profile
     return None
 
 
@@ -1515,6 +1828,8 @@ def stop_profile() -> None:
         control = folder / ".control"
         control.mkdir(exist_ok=True)
         (control / "stop.request").write_text("server-manager\n")
+        if profile_game(profile) == "bedrock" and not read_pid(STATE / "runner.pid"):
+            bedrock_command(profile, "stop")
         print(f"Saving and stopping {profile['name']} …")
         deadline = time.time() + 125
         port = int(profile.get("port", DEFAULT_PORT))
@@ -1522,23 +1837,25 @@ def stop_profile() -> None:
         # terminal reaps it) after Minecraft has saved and exited. The port is
         # the authoritative server state; do not make the UI hang on a stale
         # wrapper PID after the server is safely offline.
-        while game_port_in_use(profile) and time.time() < deadline:
+        while ((bedrock_container_running(profile) or read_pid(STATE / "runner.pid")) if profile_game(profile) == "bedrock" else game_port_in_use(profile)) and time.time() < deadline:
             time.sleep(1)
-        if game_port_in_use(profile):
+        if ((bedrock_container_running(profile) or read_pid(STATE / "runner.pid")) if profile_game(profile) == "bedrock" else game_port_in_use(profile)):
             raise ManagerError("The server did not stop cleanly within 125 seconds.")
         stop_process(STATE / "runner.pid", timeout=3)
         SERVER_PID.unlink(missing_ok=True)
     stop_process(PLAYIT_PID)
     (STATE / "active-profile").unlink(missing_ok=True)
-    print("Minecraft and playit.gg are stopped.")
+    print("The managed server and playit.gg are stopped.")
 
 
 def send_command(command: str) -> None:
     profile = active_profile()
     if not profile:
         raise ManagerError("No managed server is running.")
-    if profile_game(profile) != "minecraft":
+    if profile_game(profile) not in {"minecraft", "bedrock"}:
         raise ManagerError("Palworld console commands are not supported by BlockOps yet. Use its configuration files instead.")
+    if profile_game(profile) == "bedrock" and (not command.strip() or any(c in command for c in "\r\n\x00")):
+        raise ManagerError("Enter one Bedrock console command at a time.")
     request = absolute_profile_path(profile) / ".control" / "command.request"
     if request.exists():
         raise ManagerError("The previous server command is still pending.")
@@ -1642,7 +1959,9 @@ def show_status() -> None:
     if not data:
         print("No profiles exist.")
     for profile in data:
-        if profile_game(profile) == "palworld":
+        if profile_game(profile) == "bedrock":
+            print(f"{profile['id']}: Minecraft Bedrock ({profile['maximumRam']}, Docker linux/amd64)")
+        elif profile_game(profile) == "palworld":
             print(f"{profile['id']}: Palworld ({profile['minimumRam']}–{profile['maximumRam']})")
         else:
             print(f"{profile['id']}: {profile['minecraftVersion']} {profile['loader']} {profile.get('loaderVersion', '')} ({profile['minimumRam']}–{profile['maximumRam']})")
@@ -1697,7 +2016,13 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("noun", nargs="?", choices=["instance"])
     create.add_argument("--name")
     create.add_argument("--id")
-    create.add_argument("--game", choices=["minecraft", "palworld"], default="minecraft")
+    create.add_argument("--game", choices=["minecraft", "bedrock", "palworld"], default="minecraft")
+    create.add_argument("--edition", choices=["java", "bedrock"], default="java")
+    create.add_argument("--bedrock-version", default="LATEST")
+    create.add_argument("--bedrock-address", default="127.0.0.1")
+    create.add_argument("--bedrock-bind", choices=["127.0.0.1", "0.0.0.0"])
+    create.add_argument("--port", type=int, default=BEDROCK_PORT)
+    create.add_argument("--udp-port", type=int, default=19140)
     create.add_argument("--minecraft", "--minecraft-version")
     create.add_argument("--loader", choices=["vanilla", "fabric", "forge"])
     create.add_argument("--loader-version")
@@ -1738,11 +2063,14 @@ def main() -> int:
                 make_profile(args)
             elif args.action == "start":
                 profile = profile_by_id(args.profile, prompt=True)
+                if active_profile():
+                    raise ManagerError("Stop the active instance before starting another server.")
                 (STATE / "active-profile").write_text(profile["id"])
                 try:
                     start_profile(profile, args.timeout)
                 except Exception:
-                    (STATE / "active-profile").unlink(missing_ok=True)
+                    if profile_game(profile) != "bedrock" or not (read_pid(STATE / "runner.pid") or bedrock_container_running(profile)):
+                        (STATE / "active-profile").unlink(missing_ok=True)
                     raise
             elif args.action == "stop":
                 stop_profile()

@@ -313,3 +313,12 @@ input:focus, select:focus { border-color: var(--grass); box-shadow: 0 0 0 2px #5
   .metric-grid, .profile-actions { grid-template-columns: 1fr; }.timeline-event { grid-template-columns: 1fr; gap: 5px; }.timeline-filter { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
+
+/* Edition-specific controls retain the existing Java and Palworld layout. */
+.bedrock-only { display: none !important; }
+.bedrock-profile .bedrock-only { display: block !important; }
+.bedrock-profile .java-only { display: none !important; }
+.bedrock-profile .tab.bedrock-only { display: inline-flex !important; }
+.bedrock-profile .switch-row.bedrock-only { display: flex !important; }
+.bedrock-profile #tab-addons:not(.active) { display: none !important; }
+#bedrock-create-options p, #tab-addons p, .bedrock-only p { line-height: 1.6; color: var(--text-muted, #b3b9b1); }

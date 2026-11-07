@@ -77,17 +77,18 @@
         </section>
 
         <section class="stat-grid" aria-label="Server information">
-          <article class="stat-card"><span class="stat-icon diamond">⌁</span><div><small>MODS</small><strong id="stat-mods">—</strong></div></article>
+          <article class="stat-card"><span class="stat-icon diamond">⌁</span><div><small id="stat-content-label">MODS</small><strong id="stat-mods">—</strong></div></article>
           <article class="stat-card"><span class="stat-icon gold">▰</span><div><small>BACKUPS</small><strong id="stat-backups">—</strong></div></article>
           <article class="stat-card"><span class="stat-icon player-icon">☺</span><div><small>PLAYERS</small><strong id="stat-players">—</strong></div></article>
         </section>
 
         <nav class="tabs" aria-label="Server sections">
           <button class="tab active" data-tab="console">CONSOLE</button>
-          <button class="tab minecraft-only" data-tab="players">PLAYERS</button>
-          <button class="tab minecraft-only" data-tab="performance">PERFORMANCE</button>
+          <button class="tab minecraft-only java-only" data-tab="players">PLAYERS</button>
+          <button class="tab minecraft-only java-only" data-tab="performance">PERFORMANCE</button>
           <button class="tab" data-tab="settings">WORLD SETTINGS</button>
-          <button class="tab minecraft-only" data-tab="mods">MODS</button>
+          <button class="tab minecraft-only java-only" data-tab="mods">MODS</button>
+          <button class="tab bedrock-only" data-tab="addons">ADD-ONS</button>
           <button class="tab" data-tab="files">CONFIG FILES</button>
           <button class="tab" data-tab="backups">BACKUPS</button>
         </nav>
@@ -189,24 +190,37 @@
               <label>Display name<input name="name" maxlength="80"></label>
               <label>Message of the day<input name="motd" maxlength="250"></label>
               <div class="field-row">
-                <label>Minimum RAM<input name="minimumRam" placeholder="2G"></label>
+                <label class="java-only">Minimum RAM<input name="minimumRam" placeholder="2G"></label>
                 <label>Maximum RAM<input name="maximumRam" placeholder="6G"></label>
               </div>
-              <label>JVM arguments<input name="jvmArguments" placeholder="-XX:+UseG1GC"></label>
+              <label class="java-only">JVM arguments<input name="jvmArguments" placeholder="-XX:+UseG1GC"></label>
             </article>
             <article class="settings-card block-panel">
               <div class="panel-title"><strong>GAME RULES</strong><span>server.properties</span></div>
               <div class="field-row">
-                <label>Game mode<select name="gamemode"><option>survival</option><option>creative</option><option>adventure</option><option>spectator</option></select></label>
+                <label>Game mode<select name="gamemode"><option>survival</option><option>creative</option><option>adventure</option><option value="spectator">spectator</option></select></label>
                 <label>Difficulty<select name="difficulty"><option>peaceful</option><option>easy</option><option>normal</option><option>hard</option></select></label>
               </div>
               <label>Maximum players<input name="maxPlayers" type="number" min="1" max="1000"></label>
               <div class="toggle-grid">
                 <label class="switch-row">Whitelist<input name="whiteList" type="checkbox"><i></i></label>
-                <label class="switch-row">Hardcore<input name="hardcore" type="checkbox"><i></i></label>
+                <label class="switch-row java-only">Hardcore<input name="hardcore" type="checkbox"><i></i></label>
+                <label class="switch-row bedrock-only">Allow cheats<input name="allowCheats" type="checkbox"><i></i></label>
+                <label class="switch-row bedrock-only">Require resource packs<input name="texturepackRequired" type="checkbox"><i></i></label>
                 <label class="switch-row">Online mode<input name="onlineMode" type="checkbox"><i></i></label>
-                <label class="switch-row">Player combat<input name="pvp" type="checkbox"><i></i></label>
+                <label class="switch-row java-only">Player combat<input name="pvp" type="checkbox"><i></i></label>
               </div>
+            </article>
+            <article class="settings-card block-panel bedrock-only">
+              <div class="panel-title"><strong>BEDROCK CONNECTION GUIDE</strong><span>Stop the instance before saving settings</span></div>
+              <label>Host network access<select name="bedrockBindAddress"><option value="127.0.0.1">This computer / local proxy only</option><option value="0.0.0.0">LAN / Internet (all host interfaces)</option></select></label>
+              <label>Advertised host IPv4 address<input name="bedrockAddress" placeholder="192.168.1.10"></label>
+              <div class="field-row"><label>TCP signaling port<input name="port" type="number" min="1024" max="65535"></label><label>UDP gameplay port<input name="bedrockUdpPort" type="number" min="1024" max="65535"></label></div>
+              <p>NetherNet uses TCP signaling and UDP gameplay. For LAN, choose LAN / Internet above, advertise this computer's LAN IPv4, allow the two ports through its firewall, then use Play → Servers → Add Server with that IPv4 and the TCP port. Docker LAN discovery may not work; add the server manually. 127.0.0.1 only supports a client on this computer. Windows clients on the same host may need the Minecraft app's loopback exemption. Console platforms may not offer Add Server.</p>
+              <p>For direct Internet access, advertise your public IPv4 and forward both ports to this computer. Verify connectivity from a different network. Online status only confirms local readiness.</p>
+              <p>Playit is manual: use a current agent (upstream requires 1.1.0+), Java 17+, WaterdogPE and a <strong>Minecraft Bedrock (NetherNet)</strong> tunnel. The old UDP-only Bedrock tunnel is insufficient. Follow the tunnel's Configuration help and the <a href="https://playit.gg/support/minecraft-bedrock-nethernet/" target="_blank" rel="noopener">official Playit guide</a>. Keep WaterdogPE and the agent running separately. BlockOps does not install them for Bedrock or verify the remote tunnel.</p>
+              <p>If Configuration help moves BDS to port 19142, set the TCP port here to match. BlockOps owns the signaling port, UDP mapping and NetherNet transport; other backend properties can be edited in Config Files while stopped. If the guide requires online-mode=false, restrict access to the authenticated proxy; choose This computer / local proxy only for Host network access before disabling authentication. Keep the backend private. BlockOps binds BDS to 0.0.0.0 inside the isolated container so Docker forwarding works; use the host network access setting instead of copying server-ip=127.0.0.1 into the container.</p>
+              <p>Backups briefly disconnect players: BlockOps saves and stops Bedrock, archives its LevelDB world plus installed behavior/resource packs, then restarts it. Add-on changes require a stopped instance. Keep your Bedrock clients and server versions compatible.</p>
             </article>
             <button class="mc-button primary save-settings" type="submit">SAVE WORLD SETTINGS</button>
           </form>
@@ -220,6 +234,16 @@
             </div>
             <div class="drop-zone" id="drop-zone"><strong>DROP MOD FILES HERE</strong><span>Only Java .jar files are accepted</span></div>
             <div class="item-list" id="mods-list"></div>
+          </div>
+        </section>
+
+        <section class="tab-panel bedrock-only" id="tab-addons">
+          <div class="management-panel block-panel">
+            <div class="panel-title"><div><strong>BEDROCK ADD-ONS</strong><span id="addon-instance">Packs for the selected instance</span></div><label class="tiny-button upload-button">IMPORT ADD-ON<input id="addon-upload" type="file" accept=".mcpack,.mcaddon" multiple></label></div>
+            <div class="backup-note">Stop this instance before importing or managing packs. Import installs packs inactive. Enable a behavior pack to activate it and its installed dependencies for this world. Back up before changing content in an existing world.</div>
+            <div class="drop-zone" id="addon-drop-zone"><strong>DROP .MCPACK OR .MCADDON HERE</strong><span>Bedrock behavior and resource packs only · 256 MB per archive</span></div>
+            <p>Use trusted authors who explicitly support your Bedrock Dedicated Server version. Java .jar mods, encrypted Marketplace downloads and world templates are not supported. Packs may require experiments or script APIs that must be configured separately. Review content errors in Console after starting.</p>
+            <div class="item-list" id="addons-list"></div>
           </div>
         </section>
 
@@ -273,6 +297,7 @@
               <label class="switch-row backup-switch">Backup during safe stop<input name="backupOnStop" type="checkbox"><i></i></label>
               <div class="field-row"><label>Every (minutes)<input name="intervalMinutes" type="number" min="5" max="1440"></label><label>Backups to keep<input name="retention" type="number" min="1" max="100"></label></div>
               <label>Compression level<select name="compressionLevel"><option value="1">1 — Fastest</option><option value="3">3 — Fast</option><option value="6">6 — Balanced</option><option value="9">9 — Smallest file</option></select></label>
+              <p class="bedrock-only">Bedrock snapshots briefly stop and restart the instance. Players disconnect. The world and installed packs are included.</p>
               <div class="policy-invariants"><strong>ALWAYS PROTECTED</strong><span>World flush before live snapshots</span><span>Safety snapshot before every restore</span><span>Archive validation and rollback on failure</span></div>
               <button class="mc-button primary" type="submit">SAVE BACKUP POLICY</button>
             </div>
@@ -288,7 +313,16 @@
       <div class="modal-header"><div><p class="eyebrow">NEW SERVER</p><h2 id="create-title">CREATE A SERVER</h2></div><button class="close-button" data-close-modal aria-label="Close">×</button></div>
       <form id="create-form">
         <label>Server name<input name="name" required maxlength="80" placeholder="The Overworld"></label>
-        <label>Game<select name="game" id="game-select"><option value="minecraft">Minecraft Java</option><option value="palworld">Palworld</option></select></label>
+        <label>Game<select name="game" id="game-select"><option value="minecraft">Minecraft</option><option value="palworld">Palworld</option></select></label>
+        <label id="minecraft-edition-field">Minecraft edition<select name="edition" id="edition-select"><option value="java">Java Edition</option><option value="bedrock">Bedrock Edition</option></select></label>
+        <div id="bedrock-create-options" hidden>
+          <p>Requires Docker Desktop running <strong>Linux containers</strong> on Windows (WSL 2) or macOS. Apple Silicon runs the official x86 server through <strong>linux/amd64 emulation</strong>; enable Rosetta with Apple Virtualization Framework in Docker Desktop. Allow file sharing for the BlockOps folder and enough Docker VM memory.</p>
+          <label>Bedrock version<input name="bedrockVersion" value="LATEST" placeholder="LATEST or exact BDS version"></label>
+          <label>Address players can reach<input name="bedrockAddress" value="127.0.0.1" placeholder="192.168.1.10"></label>
+          <p>127.0.0.1 is for this computer only. For LAN play, enter this computer's LAN IPv4 address. NetherNet advertises this address for UDP gameplay.</p>
+          <div class="field-row"><label>TCP signaling port<input name="port" type="number" min="1024" max="65535" value="19132"></label><label>UDP gameplay port<input name="bedrockUdpPort" type="number" min="1024" max="65535" value="19140"></label></div>
+          <p>First start downloads Mojang's official Bedrock Dedicated Server; subsequent starts keep that version and your files. Creating a server accepts the <a href="https://www.minecraft.net/eula" target="_blank" rel="noopener">Minecraft EULA</a>. Local start does not require Playit. Remote Playit requires manual NetherNet / WaterdogPE setup; see the connection guide in World Settings.</p>
+        </div>
         <div id="minecraft-create-options">
         <label>Minecraft version<input name="minecraftVersion" required list="version-list" placeholder="1.21.8"><datalist id="version-list"></datalist></label>
         <div class="loader-choices" role="radiogroup" aria-label="Server loader">

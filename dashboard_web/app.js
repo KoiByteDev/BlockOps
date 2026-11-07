@@ -15,6 +15,7 @@ const state = {
   settingsDirty: false,
   backupPolicyDirty: false,
   performance: null,
+  addonsSignature: "",
   setup: null,
 };
 
@@ -76,6 +77,7 @@ function selectProfile(profileId) {
   render();
   loadLog();
   if (state.tab === "mods") loadMods();
+  if (state.tab === "addons") loadAddons();
   if (state.tab === "backups") loadBackups();
   if (state.tab === "players") loadPlayers();
   state.performance = null;
@@ -86,6 +88,10 @@ function selectProfile(profileId) {
 }
 
 function statusDescription(profile) {
+  if (profile.game === "bedrock") return profile.status === "online"
+    ? `Bedrock is ready locally on TCP ${profile.port}, UDP ${profile.bedrockUdpPort}. Player and remote connectivity require separate verification.`
+    : profile.status === "starting" ? "Bedrock is starting or making a backup. Watch the console."
+    : "Ready to launch the official Bedrock Dedicated Server in Docker. Connection instructions are in World Settings.";
   if (profile.status === "online") return `Online on port ${profile.port}. Commands and players are live.`;
   if (profile.status === "starting") return `The server runner is preparing port ${profile.port}. Watch the console below.`;
   return profile.game === "palworld" ? "Ready to launch Palworld Dedicated Server on UDP port 8211." : `Ready to launch Minecraft ${profile.minecraftVersion} with ${profile.loader}.`;
@@ -96,7 +102,7 @@ function renderServerList(profiles) {
   $("#server-list").innerHTML = profiles.map((profile) => `
     <button class="server-card ${profile.id === state.selectedId ? "selected" : ""}" data-profile="${escapeHtml(profile.id)}">
       <span class="server-thumb">${escapeHtml(profile.name.slice(0, 1).toUpperCase())}</span>
-      <span><strong>${escapeHtml(profile.name)}</strong><small>${profile.game === "palworld" ? "PALWORLD" : `${escapeHtml(profile.minecraftVersion)} · ${escapeHtml(profile.loader)}`}</small></span>
+      <span><strong>${escapeHtml(profile.name)}</strong><small>${profile.game === "palworld" ? "PALWORLD" : profile.game === "bedrock" ? "MINECRAFT · BEDROCK" : `${escapeHtml(profile.minecraftVersion)} · ${escapeHtml(profile.loader)}`}</small></span>
       <i class="mini-state ${profile.status === "online" ? "online" : ""}" title="${escapeHtml(profile.status)}"></i>
     </button>
   `).join("");
@@ -118,7 +124,8 @@ function populateSettings(profile) {
   setFormValue(form, "minimumRam", profile.minimumRam);
   setFormValue(form, "maximumRam", profile.maximumRam);
   setFormValue(form, "jvmArguments", profile.jvmArguments.join(" "));
-  for (const key of ["gamemode", "difficulty", "maxPlayers", "whiteList", "hardcore", "onlineMode", "pvp"]) {
+  for (const key of ["bedrockAddress", "bedrockBindAddress", "bedrockUdpPort", "port"]) setFormValue(form, key, profile[key]);
+  for (const key of ["gamemode", "difficulty", "maxPlayers", "whiteList", "hardcore", "onlineMode", "pvp", "allowCheats", "texturepackRequired"]) {
     setFormValue(form, key, profile.properties[key]);
   }
 }
@@ -156,17 +163,22 @@ function render() {
   if (!$("#setup-modal").hidden && state.setup) renderSetupGuide(state.setup);
   if (!profile) return;
   document.body.classList.toggle("palworld-profile", profile.game === "palworld");
+  document.body.classList.toggle("bedrock-profile", profile.game === "bedrock");
+  if (profile.game === "bedrock" && ["players", "performance", "mods"].includes(state.tab)) activateTab("console");
+  if (profile.game !== "bedrock" && state.tab === "addons") activateTab("console");
+  $("#settings-form [name=gamemode] option[value=spectator]").disabled = profile.game === "bedrock";
   if (profile.game === "palworld" && ["players", "performance", "mods"].includes(state.tab)) activateTab("console");
   const running = profile.status === "online" || profile.status === "starting";
-  $("#selected-type").textContent = profile.game === "palworld" ? "PALWORLD DEDICATED SERVER" : `MINECRAFT ${profile.minecraftVersion} · ${profile.loader.toUpperCase()} SERVER`;
+  $("#selected-type").textContent = profile.game === "palworld" ? "PALWORLD DEDICATED SERVER" : profile.game === "bedrock" ? "MINECRAFT BEDROCK · DOCKER" : `MINECRAFT ${profile.minecraftVersion} · ${profile.loader.toUpperCase()} SERVER`;
   $("#selected-name").textContent = profile.name;
   $("#selected-description").textContent = statusDescription(profile);
   $("#selected-state").className = `server-state ${profile.status}`;
   $("#selected-state").innerHTML = `<i></i> ${profile.status.toUpperCase()}`;
-  $("#stat-mods").textContent = `${profile.modsCount} enabled`;
+  $("#stat-content-label").textContent = profile.game === "bedrock" ? "ADD-ONS" : "MODS";
+  $("#stat-mods").textContent = profile.game === "bedrock" ? "See Add-ons" : `${profile.modsCount} enabled`;
   $("#stat-backups").textContent = `${profile.backupsCount} saved`;
   const players = state.players[profile.id];
-  $("#stat-players").textContent = players ? `${players.online}/${players.maximum} online` : (running ? "View list" : "0 online");
+  $("#stat-players").textContent = profile.game === "bedrock" ? (running ? "Use list in Console" : "0 online") : players ? `${players.online}/${players.maximum} online` : (running ? "View list" : "0 online");
   $("#start-button").disabled = Boolean(state.data.activeProfileId) || state.data.job.status === "running";
   $("#stop-button").disabled = !running || state.data.job.status === "running";
   $("#command-input").disabled = !running || profile.game === "palworld";
@@ -175,6 +187,7 @@ function render() {
   $("#console-light").classList.toggle("online", running);
   populateSettings(profile);
   populateBackupSettings(profile);
+  if (state.tab === "addons") loadAddons();
 }
 
 function renderJob(current) {
@@ -308,7 +321,7 @@ function renderSetupGuide(data) {
   } else if (!data.tunnelConfirmed) {
     label = "BROWSER STEP";
     title = "CREATE YOUR GAME TUNNEL";
-    copy = "In Playit, add a Minecraft Java tunnel to 127.0.0.1:25565 for Minecraft. For Palworld, choose Custom UDP (not the unsupported Palworld preset) and target 127.0.0.1:8211. Save it, then confirm below.";
+    copy = "For a local Bedrock server you can close this guide and choose Create Server → Minecraft → Bedrock. Bedrock remote access needs the manual NetherNet / WaterdogPE guide in World Settings. In Playit, add a Minecraft Java tunnel to 127.0.0.1:25565 for Minecraft. For Palworld, choose Custom UDP (not the unsupported Palworld preset) and target 127.0.0.1:8211. Save it, then confirm below.";
     external.hidden = false;
     external.textContent = "OPEN PLAYIT TUNNELS ↗";
     external.href = "https://playit.gg/account/tunnels";
@@ -410,10 +423,6 @@ async function loadLog() {
 }
 
 function openCreateModal() {
-  if (!(state.data?.profiles?.length) && state.setup && !state.setup.canCreateServer) {
-    openSetupGuide();
-    return;
-  }
   $("#create-modal").hidden = false;
   setTimeout(() => $("#create-form [name=name]").focus(), 30);
 }
@@ -432,6 +441,52 @@ async function runAction(path, body = {}) {
     toast(error.message, "error");
     throw error;
   }
+}
+
+async function loadAddons() {
+  const profile = selectedProfile();
+  if (!profile || profile.game !== "bedrock") return;
+  const instanceId = profile.id;
+  try {
+    const { addons } = await api(`/api/profiles/${encodeURIComponent(instanceId)}/addons`);
+    if (selectedProfile()?.id !== instanceId) return;
+    $("#addon-instance").textContent = `${profile.name} · ${profile.id} · ${addons.length} packs`;
+    const locked = profile.running || state.data.job.status === "running";
+    const signature = JSON.stringify([instanceId, profile.name, locked, addons]);
+    if (signature === state.addonsSignature) return;
+    state.addonsSignature = signature;
+    $("#addon-upload").disabled = locked;
+    $("#addons-list").innerHTML = addons.length ? addons.map((pack) => `
+      <div class="list-item ${pack.enabled ? "" : "disabled"}">
+        <span class="item-block">${pack.kind === "behavior_packs" ? "B" : "R"}</span>
+        <span><strong>${escapeHtml(pack.name)}</strong><small>${pack.kind === "behavior_packs" ? "Behavior" : "Resource"} · ${escapeHtml(pack.version.join("."))} · ${pack.enabled ? "Active" : "Inactive"}${pack.scripted ? " · Script APIs: check compatibility" : ""}<br>${escapeHtml(pack.id)}${pack.minimumEngineVersion ? ` · Minimum engine ${escapeHtml(pack.minimumEngineVersion.join("."))}` : ""}</small></span>
+        <button class="tiny-button" data-pack-id="${escapeHtml(pack.id)}" data-pack-action="${pack.enabled ? "disable" : "enable"}" ${locked ? "disabled" : ""}>${pack.enabled ? "DISABLE" : "ENABLE"}</button>
+        <button class="tiny-button" data-pack-id="${escapeHtml(pack.id)}" data-pack-action="remove" ${locked ? "disabled" : ""}>REMOVE</button>
+      </div>`).join("") : '<div class="list-empty">NO BEDROCK PACKS INSTALLED IN THIS INSTANCE</div>';
+    $$('[data-pack-action]').forEach((button) => button.addEventListener("click", async () => {
+      if (button.dataset.packAction === "remove" && !confirm(`Remove this pack from ${profile.name}? Back up first; removing content can affect existing world progress.`)) return;
+      try {
+        await runAction(`/api/profiles/${encodeURIComponent(instanceId)}/addons/change`, { id: button.dataset.packId, action: button.dataset.packAction });
+        await loadAddons();
+      } catch {}
+    }));
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function uploadAddons(files) {
+  const profile = selectedProfile();
+  if (!profile || profile.game !== "bedrock") return;
+  if (profile.running) { toast("Stop this Bedrock instance before importing add-ons.", "error"); return; }
+  const instanceId = profile.id;
+  for (const file of files) {
+    if (!/\.(mcpack|mcaddon)$/i.test(file.name)) { toast(`${file.name}: choose a .mcpack or .mcaddon.`, "error"); continue; }
+    try {
+      const result = await api(`/api/profiles/${encodeURIComponent(instanceId)}/addons/${encodeURIComponent(file.name)}`, { method: "PUT", headers: { "Content-Type": "application/zip" }, body: file });
+      toast(`${profile.name}: ${result.packs.length} packs imported inactive. Enable the packs you want for this world.`);
+    } catch (error) { toast(error.message, "error"); }
+  }
+  $("#addon-upload").value = "";
+  await loadAddons();
 }
 
 async function loadMods() {
@@ -858,6 +913,7 @@ function activateTab(name) {
   $$(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${name}`));
   if (name === "console") loadLog();
   if (name === "mods") loadMods();
+  if (name === "addons") loadAddons();
   if (name === "backups") loadBackups();
   if (name === "players") loadPlayers();
   if (name === "performance") loadPerformance(true);
@@ -936,8 +992,9 @@ function wireEvents() {
     const jvmArguments = String(form.get("jvmArguments") || "").match(/(?:[^\s"]+|"[^"]*")+/g) || [];
     try {
       await runAction(`/api/profiles/${encodeURIComponent(profile.id)}/settings`, {
+        ...(profile.game === "bedrock" ? { bedrockBindAddress: form.get("bedrockBindAddress"), bedrockAddress: form.get("bedrockAddress"), bedrockUdpPort: form.get("bedrockUdpPort"), port: form.get("port") } : {}),
         name: form.get("name"), minimumRam: form.get("minimumRam"), maximumRam: form.get("maximumRam"), jvmArguments: jvmArguments.map((value) => value.replace(/^"|"$/g, "")),
-        properties: { motd: form.get("motd"), gamemode: form.get("gamemode"), difficulty: form.get("difficulty"), maxPlayers: form.get("maxPlayers"), whiteList: form.has("whiteList"), hardcore: form.has("hardcore"), onlineMode: form.has("onlineMode"), pvp: form.has("pvp") },
+        properties: { motd: form.get("motd"), gamemode: form.get("gamemode"), difficulty: form.get("difficulty"), maxPlayers: form.get("maxPlayers"), whiteList: form.has("whiteList"), hardcore: form.has("hardcore"), onlineMode: form.has("onlineMode"), pvp: form.has("pvp"), allowCheats: form.has("allowCheats"), texturepackRequired: form.has("texturepackRequired") },
       });
       state.settingsDirty = false;
       await refreshState(true);
@@ -945,19 +1002,26 @@ function wireEvents() {
   });
   $("#create-form").addEventListener("change", (event) => {
     if (event.target.name === "loader") $("#loader-version-field").hidden = event.target.value === "vanilla";
-    if (event.target.name === "game") {
-      const palworld = event.target.value === "palworld";
-      $("#minecraft-create-options").hidden = palworld;
+    if (["game", "edition"].includes(event.target.name)) {
+      const form = $("#create-form");
+      const palworld = form.elements.game.value === "palworld";
+      const bedrock = !palworld && form.elements.edition.value === "bedrock";
+      $("#minecraft-edition-field").hidden = palworld;
+      $("#minecraft-create-options").hidden = palworld || bedrock;
+      $("#bedrock-create-options").hidden = !bedrock;
       $("#palworld-create-help").hidden = !palworld;
-      $("#create-form [name=minecraftVersion]").required = !palworld;
-      $("#create-form [name=minimumRam]").value = palworld ? "4G" : "2G";
-      $("#create-form [name=maximumRam]").value = palworld ? "16G" : "6G";
+      form.elements.minecraftVersion.required = !palworld && !bedrock;
+      form.elements.minimumRam.closest("label").hidden = bedrock;
+      form.elements.minimumRam.value = palworld ? "4G" : bedrock ? "1G" : "2G";
+      form.elements.maximumRam.value = palworld ? "16G" : bedrock ? "4G" : "6G";
     }
   });
   $("#create-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    await runAction("/api/jobs/create", Object.fromEntries(form.entries()));
+    const payload = Object.fromEntries(form.entries());
+    if (payload.game === "minecraft" && payload.edition === "bedrock") payload.game = "bedrock";
+    await runAction("/api/jobs/create", payload);
   });
   $("#create-backup").addEventListener("click", async () => { await runAction(`/api/profiles/${encodeURIComponent(selectedProfile().id)}/backup`); setTimeout(loadBackups, 1500); });
   $("#backup-upload").addEventListener("change", (event) => uploadBackup(event.target.files));
@@ -1020,6 +1084,12 @@ function wireEvents() {
       saveConfigFile();
     }
   });
+  $("#addon-upload").addEventListener("change", (event) => uploadAddons(event.target.files));
+  const addonDrop = $("#addon-drop-zone");
+  addonDrop.addEventListener("click", () => $("#addon-upload").click());
+  for (const eventName of ["dragenter", "dragover"]) addonDrop.addEventListener(eventName, (event) => { event.preventDefault(); addonDrop.classList.add("dragging"); });
+  for (const eventName of ["dragleave", "drop"]) addonDrop.addEventListener(eventName, (event) => { event.preventDefault(); addonDrop.classList.remove("dragging"); });
+  addonDrop.addEventListener("drop", (event) => uploadAddons(event.dataTransfer.files));
   $("#mod-upload").addEventListener("change", (event) => uploadMods(event.target.files));
   const dropZone = $("#drop-zone");
   for (const name of ["dragenter", "dragover"]) dropZone.addEventListener(name, (event) => { event.preventDefault(); dropZone.classList.add("dragging"); });
