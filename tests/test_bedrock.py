@@ -1,5 +1,6 @@
 import io
 import http.client
+import http.server
 import threading
 import json
 import os
@@ -11,6 +12,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+import urllib.request
 import uuid
 import zipfile
 from pathlib import Path
@@ -84,6 +86,39 @@ class BedrockTests(unittest.TestCase):
         archive = self.root / 'test.mcaddon'
         archive.write_bytes(content if content is not None else bundle())
         return packs.import_packs(self.folder, self.world, archive)
+
+    def test_readiness_accepts_empty_probe_only_for_private_proxy_backend(self):
+        class Probe(http.server.BaseHTTPRequestHandler):
+            status = 200
+            body = b''
+
+            def do_GET(self):
+                self.send_response(self.status)
+                self.end_headers()
+                self.wfile.write(self.body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Probe)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        profile = {**self.profile, 'port': server.server_port,
+                   'bedrockRemote': {'enabled': True}, 'bedrockBindAddress': '127.0.0.1'}
+        try:
+            self.assertTrue(manager.bedrock_ready(profile))
+            self.assertFalse(manager.bedrock_ready({**profile, 'bedrockRemote': {'enabled': False}}))
+            self.assertFalse(manager.bedrock_ready({**profile, 'bedrockBindAddress': '0.0.0.0'}))
+            Probe.status = 503
+            self.assertFalse(manager.bedrock_ready(profile))
+            Probe.status, Probe.body = 200, b'not a NetherNet advertisement'
+            self.assertFalse(manager.bedrock_ready(profile))
+            Probe.body = b'{"version":"1.26.63.1"}'
+            self.assertTrue(manager.bedrock_ready({**profile, 'bedrockRemote': {'enabled': False}}))
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join()
 
     def test_nested_bundle_imports_inactive_and_enables_paired_dependencies(self):
         self.assertEqual(len(self.install()), 2)
@@ -406,6 +441,47 @@ class BedrockTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('BLOCKOPS_TEST_DOCKER') == '1', 'Opt-in real Docker test; downloads official BDS')
 class BedrockDockerIntegrationTests(unittest.TestCase):
+    def test_private_backend_with_empty_probe_completes_startup(self):
+        root = Path(tempfile.mkdtemp(prefix='blockops-bedrock-private-')).resolve()
+        env = {**os.environ, 'BLOCKOPS_DATA_DIR': str(root)}
+        env.pop('BLOCKOPS_SESSION_ID', None)  # No public proxy/account in this test.
+        executable = Path(manager.__file__).resolve()
+        profile = None
+
+        def cli(*arguments):
+            result = subprocess.run([sys.executable, '-u', str(executable), *arguments],
+                                    env=env, capture_output=True, text=True, timeout=300)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        try:
+            cli('create', '--game', 'bedrock', '--name', 'Private probe', '--port', '29172', '--udp-port', '29172')
+            registry = json.loads((root / 'server-profiles.json').read_text())
+            profile = registry['profiles'][0]
+            profile.update(bedrockBindAddress='127.0.0.1', bedrockAddress='127.0.0.1',
+                           bedrockRemote={'enabled': True})
+            folder = manager.absolute_profile_path(profile)
+            manager.save_json(folder / 'profile.json', profile)
+            manager.save_json(root / 'server-profiles.json', registry)
+            dashboard.update_properties(folder / 'server.properties',
+                                        {'online-mode': 'false', 'allow-list': 'false', 'enable-lan-visibility': 'false'})
+            cli('start', '--profile', profile['id'], '--timeout', '240')
+            self.assertTrue(manager.bedrock_ready(profile))
+            with urllib.request.urlopen('http://127.0.0.1:29172/v1/join', timeout=3) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.read(), b'')
+            self.assertFalse((root / '.manager-state' / 'playit.pid').exists())
+            cli('stop')
+            self.assertFalse(manager.bedrock_container_running(profile))
+            self.assertTrue((manager.world_path(folder) / 'db' / 'CURRENT').is_file())
+            print('REAL PRIVATE BACKEND VERIFIED: auth-delegated BDS returned an empty HTTP 200 probe; startup completed and clean stop preserved LevelDB. No public tunnel was started.')
+        finally:
+            if profile and manager.bedrock_container_running(profile):
+                subprocess.run([sys.executable, str(executable), 'stop'], env=env, capture_output=True, timeout=150)
+            if profile and manager.bedrock_container_running(profile):
+                print(f'Test data retained: {root}')
+            else:
+                shutil.rmtree(root)
+
     def test_real_lifecycle_persistence_addons_and_restore(self):
         root = Path(tempfile.mkdtemp(prefix='blockops-bedrock-integration-')).resolve()
         env = {**os.environ, 'BLOCKOPS_DATA_DIR': str(root)}

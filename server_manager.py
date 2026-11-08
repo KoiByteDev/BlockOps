@@ -781,7 +781,17 @@ def bedrock_ready(profile: dict) -> bool:
     # A listening Docker proxy alone is not evidence of BDS readiness.
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{int(profile['port'])}/v1/join", timeout=1) as response:
-            info = json.load(response)
+            if response.status != 200:
+                return False
+            body = response.read()
+        # With online-mode=false, the private BDS backend acknowledges the
+        # NetherNet probe with HTTP 200 but omits its public advertisement.
+        # Docker's port proxy cannot generate this HTTP acknowledgement.
+        if not body.strip():
+            return (profile.get('bedrockRemote', {}).get('enabled') is True
+                    and profile.get('bedrockBindAddress') == '127.0.0.1'
+                    and profile.get('bedrockAddress') == '127.0.0.1')
+        info = json.loads(body)
         return isinstance(info, dict) and bool(info.get("version"))
     except (OSError, ValueError):
         return False
