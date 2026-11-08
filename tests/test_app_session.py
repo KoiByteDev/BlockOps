@@ -21,6 +21,7 @@ import server_manager as manager
 
 CONFIG = '''listener:
   host: 127.0.0.1:19132
+  transport: nethernet
   priorities:
     - vanilla
 servers:
@@ -28,12 +29,13 @@ servers:
     address: 127.0.0.1:19142
     server_type: bedrock
 nethernet:
-  enabled: true
-  signaling_mode: nxs
-  udp_port: 19133
-  nxs:
-    endpoint: https://nethernet.playit.gg
-    token: unit-test-only-not-a-real-token
+  webrtc_port: 0
+  signaling:
+    mode: nxs
+    stun_discovery: false
+    nxs:
+      endpoint: https://nethernet.playit.gg
+      token: unit-test-only-not-a-real-token
 online_mode: true
 upstream_encryption: true
 use_login_extras: false
@@ -149,7 +151,8 @@ class ManagedNetworkTests(unittest.TestCase):
         managed_network.validate_proxy_config(CONFIG, 19142)
         for invalid in (CONFIG.replace('online_mode: true', 'online_mode: false'),
                         CONFIG.replace('127.0.0.1:19142', '192.168.0.8:19142'),
-                        CONFIG.replace('signaling_mode: nxs', 'signaling_mode: builtin'),
+                        CONFIG.replace('mode: nxs', 'mode: builtin'),
+                        CONFIG.replace('transport: nethernet', 'transport: raknet'),
                         CONFIG.replace('https://nethernet.playit.gg', 'https://elsewhere.example'),
                         CONFIG.replace('unit-test-only-not-a-real-token', ''),
                         CONFIG.replace('server_type: bedrock', 'server_type: raknet')):
@@ -217,9 +220,16 @@ class ManagedNetworkTests(unittest.TestCase):
             self.assertEqual(dashboard.parse_properties(root / 'server.properties')['online-mode'], 'true')
 
     def test_duplicate_yaml_or_unrelated_enabled_value_cannot_bypass_guards(self):
-        bad = [CONFIG + 'online_mode: false\n', CONFIG.replace('  enabled: true', '  enabled: false') + 'other:\n  enabled: true\n']
+        bad = [CONFIG + 'online_mode: false\n', CONFIG.replace('    mode: nxs', '    mode: builtin') + 'other:\n  mode: nxs\n']
         for content in bad:
             with self.assertRaises(manager.ManagerError):
+                managed_network.validate_proxy_config(content, 19142)
+
+    def test_old_or_masked_config_does_not_silently_use_builtin_signaling(self):
+        legacy = CONFIG.replace('  signaling:\n    mode: nxs', '  enabled: true\n  signaling_mode: nxs')
+        for content in (legacy, CONFIG.replace('unit-test-only-not-a-real-token', '********'),
+                        CONFIG.replace('unit-test-only-not-a-real-token', 'file:/private/token')):
+            with self.subTest(), self.assertRaises(manager.ManagerError):
                 managed_network.validate_proxy_config(content, 19142)
 
     def test_first_install_discovers_only_the_new_private_cli_pair(self):
@@ -450,7 +460,7 @@ class Handler(d.DashboardHandler):
   pid,_=m.start_playit()
   folder=m.DATA_ROOT/'proxy'; folder.mkdir()
   # Builtin loopback-only proxy: no tunnel/account/token is used in this test.
-  config=CONFIG.replace('127.0.0.1:19132','127.0.0.1:29332').replace('signaling_mode: nxs','signaling_mode: builtin').replace('udp_port: 19133','udp_port: 29333')
+  config=CONFIG.replace('127.0.0.1:19132','127.0.0.1:29332').replace('mode: nxs','mode: builtin').replace('webrtc_port: 0','webrtc_port: 29333')
   (folder/'config.yml').write_text(config)
   java=m.resolve_java(25)
   with (folder/'proxy.log').open('ab',buffering=0) as log:

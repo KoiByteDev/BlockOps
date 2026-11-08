@@ -131,12 +131,14 @@ def validate_proxy_config(content: str, port: int):
         stack.append((indent, path))
     if values.get(('online_mode',)) != 'true':
         raise manager.ManagerError('Waterdog online_mode must be true so the public proxy authenticates players.')
-    if values.get(('nethernet', 'enabled')) != 'true' or values.get(('nethernet', 'signaling_mode')) != 'nxs':
-        raise manager.ManagerError('Paste the Playit WaterdogPE configuration with NetherNet enabled and nxs signaling.')
-    if values.get(('nethernet', 'nxs', 'endpoint'), '').rstrip('/') != 'https://nethernet.playit.gg':
+    # Current Waterdog selects transport on the listener and nests NXS settings
+    # under signaling. The older enabled/signaling_mode layout is ignored by it.
+    if values.get(('listener', 'transport')) != 'nethernet' or values.get(('nethernet', 'signaling', 'mode')) != 'nxs':
+        raise manager.ManagerError('Copy the current WaterdogPE configuration from Playit: listener.transport must be nethernet and nethernet.signaling.mode must be nxs.')
+    if values.get(('nethernet', 'signaling', 'nxs', 'endpoint'), '').rstrip('/') != 'https://nethernet.playit.gg':
         raise manager.ManagerError('The Waterdog NXS endpoint must be https://nethernet.playit.gg.')
-    token = values.get(('nethernet', 'nxs', 'token'), '')
-    if not token or token.startswith(('YOUR', '<', '|', '>')):
+    token = values.get(('nethernet', 'signaling', 'nxs', 'token'), '')
+    if not token or token.startswith(('YOUR', '<', '|', '>', '*', 'file:')) or set(token) == {'•'}:
         raise manager.ManagerError('The tunnel configuration needs its private NXS token. Copy it locally from Playit Configuration help.')
     backends = [path[1] for path, value in values.items() if len(path) == 3 and path[0] == 'servers' and path[2] == 'address' and value == f'127.0.0.1:{port}']
     if not backends or any(values.get(('servers', backend, 'server_type')) not in {'bedrock', 'nethernet'} for backend in backends):
